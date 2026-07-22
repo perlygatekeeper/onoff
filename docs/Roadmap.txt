@@ -1,0 +1,184 @@
+onoff Roadmap
+=============
+
+Purpose
+-------
+
+Make onoff a friendly, predictable tool for extracting and splitting sections
+of text. It should cover common jobs without requiring users to construct sed,
+awk, or Perl programs, while remaining useful in pipelines and scripts.
+
+
+Guiding principles
+------------------
+
+* Preserve the current concise forms, such as 4..27 and BEGIN..END.
+* Prefer clear, unsurprising behavior over clever argument interpretation.
+* Continue to support streaming input; do not require an entire file in memory.
+* Keep standard output suitable for pipelines. Send prompts and diagnostics to
+  the terminal or standard error.
+* Document every feature with small, runnable examples.
+* Maintain backward compatibility when practical, and document intentional
+  incompatibilities.
+
+
+Phase 1: Establish a reliable baseline
+--------------------------------------
+
+* Replace the inherited placeholder test with tests of current onoff behavior.
+* Test numeric selections: N, N.., ..M, and N..M.
+* Test regular-expression starts, stops, and individual matches.
+* Test lead, linger, context, numbering, standard input, and multiple files.
+* Correct context overlap, duplicated output, and lingering line numbers.
+* Validate missing option values, invalid regular expressions, and numeric
+  arguments before processing input.
+* Read standard input by default when no filenames are supplied.
+* Define useful exit statuses for success, no selections, and errors.
+
+
+Phase 2: Modernize the command line
+-----------------------------------
+
+* Accept conventional long options such as --start, --end, and --help while
+  retaining the existing single-hyphen forms.
+* Add --fixed for literal-string matching and --ignore-case for insensitive
+  matching.
+* Make multiple start, end, and match expressions accumulate correctly.
+* Define and test state resets between input files.
+* Add --list-ranges or --dry-run to report selections without printing them.
+
+
+Phase 3: Boundary control
+-------------------------
+
+Allow each range boundary to be included or excluded. Inclusive boundaries
+remain the default for compatibility.
+
+Examples:
+
+  onoff --start BEGIN --end END file
+  onoff --start-after BEGIN --end END file
+  onoff --start BEGIN --end-before END file
+  onoff --start-after BEGIN --end-before END file
+
+Define behavior when one line matches both boundaries and when an end boundary
+is never found.
+
+
+Phase 4: Paired range rules
+---------------------------
+
+Connect each start condition to its own end condition instead of placing all
+starts and ends in shared pools.
+
+Possible command form:
+
+  onoff --pair START END file
+  onoff --pair START_A END_A --pair START_B END_B file
+
+The first version should use a simple state model:
+
+* A matching start activates its paired rule.
+* Only that rule's end condition closes it.
+* Start and end lines are inclusive unless configured otherwise.
+* An unterminated range continues through end of file by default.
+* Nested ranges are not supported initially.
+
+Later versions may support overlapping or nested active rules if real examples
+show that the added complexity is worthwhile.
+
+
+Phase 5: Route ranges to output files
+-------------------------------------
+
+Associate an optional destination with each paired rule. This allows one pass
+over an input stream to separate different kinds of sections.
+
+Possible command form:
+
+  onoff \
+    --pair BEGIN_ERROR END_ERROR errors.txt \
+    --pair BEGIN_EVENT END_EVENT events.txt \
+    input.txt
+
+Requirements:
+
+* Standard output remains the default when a rule has no destination.
+* Each destination is opened or initialized once per run, not once per match.
+* Existing output files are not overwritten unless explicitly requested.
+* --append permits appending; --force permits replacement.
+* Input and output paths must not refer to the same file.
+* Multiple matches for one rule are written to the same destination.
+* Multiple rules may intentionally share a destination.
+* --otherwise FILE may receive unmatched input.
+* Failed processing should not leave misleading partial output when atomic
+  temporary-file handling is practical.
+
+A configuration file may eventually be preferable for large rule sets:
+
+  ranges:
+    - name: errors
+      start: '^BEGIN ERRORS'
+      end: '^END ERRORS'
+      output: errors.txt
+      include_start: false
+      include_end: false
+
+Captured text could eventually produce dynamic output filenames, but only with
+strict path sanitization and an explicit output directory.
+
+
+Phase 6: Interactive review
+---------------------------
+
+Add an optional terminal-oriented mode for reviewing candidate boundaries or
+complete ranges.
+
+  onoff --interactive --start BEGIN --end END file
+
+The prompt should show the filename, line number, matching line, and nearby
+context. Suggested responses are yes, no, all, and quit. Prompts must never be
+mixed into selected standard output, and interactive mode should refuse to run
+without a usable terminal unless an explicit alternative is provided.
+
+An initial --list-ranges report may prove more useful than prompting during a
+streaming scan and should be implemented first.
+
+
+Documentation and examples
+--------------------------
+
+Every completed feature should add:
+
+* A focused test.
+* A small input file when existing examples are insufficient.
+* A short example command preceded by a description of the task.
+* Expected behavior for matches, no matches, malformed arguments, and
+  unterminated ranges.
+
+Important example families include configuration files, source-code sections,
+logs, tagged documents, repeated ranges, multiple input files, overlapping
+context, excluded markers, paired outputs, and pipeline input.
+
+
+Open design decisions
+---------------------
+
+* Final syntax for repeatable paired rules and their output destinations.
+* Whether an unterminated range should print through EOF, be discarded, or
+  cause an error; this may become a selectable policy.
+* Whether multiple paired rules may be active simultaneously.
+* Whether nested ranges are useful enough to support.
+* How context is routed when two active rules use different output files.
+* Whether configuration files should use YAML, JSON, or a simpler native
+  format with no additional Perl dependencies.
+* Whether line numbering restarts for each file or can treat all files as one
+  continuous stream.
+
+
+Not currently planned
+---------------------
+
+* Editing input files in place.
+* Replacing sed, awk, grep, or general-purpose regular-expression tools.
+* Loading arbitrarily large inputs into memory merely to simplify processing.

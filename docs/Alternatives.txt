@@ -1,0 +1,76 @@
+You may ask "Are there any other utilities out there that do something similar?"
+
+Yes. onoff combines features that already exist in several standard Unix
+utilities, though none has exactly the same interface.
+
+The closest matches are:
+
+awk — closest overall
+
+It has explicit inclusive start/stop ranges:
+
+awk '/START/,/STOP/' file
+
+Line-number ranges:
+
+awk 'NR >= 4 && NR <= 27' file
+
+Custom state is straightforward:
+
+awk '/START/{printing=1} printing; /STOP/{printing=0}' file
+
+GNU awk formally calls these “range patterns”; both boundary lines are
+included. GNU awk range documentation
+
+sed — shortest equivalent for simple ranges
+
+Regex-delimited range:
+
+sed -n '/START/,/STOP/p' file
+
+Line-number range:
+
+sed -n '4,27p' file
+
+From line 4 onward:
+
+sed -n '4,$p' file
+
+GNU sed also supports “a match plus N following lines,” although some
+extensions differ from macOS/BSD sed. GNU sed range documentation
+
+grep or ripgrep — best for matches with context
+
+rg -C 3 'ERROR' file
+
+rg -B 2 -A 5 'ERROR' file
+
+This corresponds closely to onoff -context, -lead, and -linger, but it does not
+naturally print everything between separate start and stop expressions. ripgrep
+guide
+
+pcre2grep — richer Perl-compatible expressions
+
+It supports before/after context and multiline matching:
+
+pcre2grep -M 'START.*?STOP' file
+
+This is useful when the entire range can be expressed as one multiline regex,
+but it is less convenient for large streaming files. pcre2grep documentation
+
+Perl one-liners — same implementation family
+perl -ne '$p=1 if /START/; print if $p; $p=0 if /STOP/' file
+
+This offers everything onoff can do, but is much less discoverable.
+
+My take: awk is the strongest direct competitor. The value of onoff is not a
+new underlying capability; it is a memorable, unified interface:
+
+onoff START..STOP file
+onoff 4..27 file
+onoff -grep ERROR -context 3 file
+
+That can still be worthwhile. A polished onoff would essentially be a
+user-friendly range-extraction tool sitting between terse sed/awk expressions
+and ordinary grep context options.
+

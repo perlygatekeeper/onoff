@@ -148,5 +148,21 @@ onoff 1..10 first.txt second.txt
   use `-` explicitly for standard input.
 - The test suite is unfinished.
 
+## Project commands
+
+The small project `Makefile` provides the common development commands:
+
+```sh
+make help
+make syntax
+make test
+make examples
+make check
+```
+
+Sample input and runnable command examples live in `examples/`. The existing
+test file is under `test/`; it is an unfinished placeholder and does not yet
+test `onoff` behavior.
+
 The original development notes and design questions are preserved in
-`README.notes`.
+`docs/Readme.notes`. Planned development is described in `docs/Roadmap.txt`.
