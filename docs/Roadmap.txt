@@ -127,6 +127,65 @@ A configuration file may eventually be preferable for large rule sets:
 Captured text could eventually produce dynamic output filenames, but only with
 strict path sanitization and an explicit output directory.
 
+Output filename templates
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A start condition may capture text that is expanded into the output filename.
+Support numbered captures and recommend named captures for readability:
+
+  onoff \
+    --start '^[^#]*sub\s+(?<name>\S+)' \
+    --end '^}$' \
+    --output-template 'sub_{name}.pl' \
+    --output-dir extracted \
+    source.pl
+
+The familiar $1 form may be accepted as an alias, but {1} and {name} are safer
+in shells and configuration files. Double-quoted "$1" must not be recommended
+because a shell may expand it before onoff receives the template.
+
+Sequential templates permit splitting ranges when no useful name is captured:
+
+  onoff \
+    --start '^BEGIN' \
+    --end '^END' \
+    --output-template 'range_{number:02}.txt' \
+    input.txt
+
+This produces range_01.txt, range_02.txt, and so on. Initial template fields:
+
+  {1}             first numbered start capture
+  {name}          named start capture
+  {number}        range number
+  {number:03}     zero-padded range number
+  {input}         input filename
+  {input_base}    input filename without its directory
+  {rule}          paired rule name
+  {start_line}    line where the range began
+
+End captures and {end_line} should wait because the destination is normally
+opened when a range starts. Supporting them would require buffering or writing
+to a temporary file and renaming it when the range ends.
+
+Captured values are untrusted input. Filename expansion must:
+
+* Reject null bytes, control characters, absolute paths, and parent traversal.
+* Replace path separators and unsafe filename characters in captures.
+* Constrain every result beneath --output-dir.
+* Limit generated component and path lengths.
+* Refuse existing files and duplicate generated names by default.
+* Report original captures and sanitized results in debug output.
+
+Duplicate-name policies may later include error, number, append, and overwrite;
+error should be the default. Directory structure may come from the template,
+but never directly from a captured value.
+
+When a start matches, processing will save its captures in state, expand and
+validate the template, open the destination, and route the active range there.
+The plan stores rules and templates, state stores the active rule, captures,
+range number, start line, output path, and handle, and stats records completed
+ranges, unterminated ranges, output files, and lines written.
+
 
 Phase 6: Interactive review
 ---------------------------

@@ -26,15 +26,15 @@ $usage .= "[  N..M     |  N..   |  ..M  |  N  ]\n\t";
 $usage .= "[ -number ]\n\t";
 $usage .= "[ [ -file ] file1 file2 .. ]";
 
-my $conf = initialize();
+my $plan = initialize_plan();
 
-parse_args_inde($conf, @ARGV);
-print Dumper($conf) if ($conf->{debug});
-process_inde($conf);
+parse_arguments($plan, @ARGV);
+print Dumper($plan) if ($plan->{debug});
+execute_plan($plan);
 
 exit 0;
 
-sub initialize {
+sub initialize_plan {
   return {
     debug          => 0,
     explanations   => [],
@@ -49,17 +49,23 @@ sub initialize {
   };
 }
 
-sub process_inde {
-  my $conf = shift;
-  foreach my $file (@{$conf->{files}}) {
-    my $printing = $conf->{start_printing};
-    my $lines = {
-      'not printed' => 0,
-      printed       => 0,
-      remembered    => [],
-      starts        => 0,
-      stops         => 0,
-      total         => 0,
+sub execute_plan {
+  my $plan = shift;
+  foreach my $file (@{$plan->{files}}) {
+    my $state = {
+      active_rule => undef,
+      filename    => $file,
+      lead_buffer => [],
+      line_number => 0,
+      linger_left => 0,
+      printing    => $plan->{start_printing},
+    };
+    my $stats = {
+      ends_matched   => 0,
+      lines_printed  => 0,
+      lines_read     => 0,
+      lines_skipped  => 0,
+      starts_matched => 0,
     };
 
     my $filehandle;
@@ -70,85 +76,88 @@ sub process_inde {
     }
 
     while (my $line = <$filehandle>) {
-      $lines->{total}++;
-      if ($printing) {  # --- PRINTING ---
-        if ($conf->{stop_lines}{$lines->{total}} or
-            ($conf->{stop_regexp} and $line =~ $conf->{stop_regexp})) {
-          $lines->{stops}++;
-          if ($conf->{print_stops}) {
-            print_line($conf, $lines, $line);
-            $printing = 0;
+      $state->{line_number}++;
+      $stats->{lines_read}++;
+      if ($state->{printing}) {  # --- PRINTING ---
+        if ($plan->{stop_lines}{$state->{line_number}} or
+            ($plan->{stop_regexp} and $line =~ $plan->{stop_regexp})) {
+          $stats->{ends_matched}++;
+          if ($plan->{print_stops}) {
+            print_line($plan, $state, $stats, $line);
+            $state->{printing} = 0;
           }
-          my $lingering = $conf->{linger};
-          if ($lingering) {
-            print "Lingering printing active, $lingering\n" if ($conf->{debug});
-            while ($lingering and $line = <$filehandle>) {
-              $lines->{total}++;
-              print "$lingering " if ($conf->{debug});
-              print_line($conf, $lines, $line);
-              $lingering--;
+          $state->{linger_left} = $plan->{linger};
+          if ($state->{linger_left}) {
+            print "Lingering printing active, $state->{linger_left}\n" if ($plan->{debug});
+            while ($state->{linger_left} and $line = <$filehandle>) {
+              $state->{line_number}++;
+              $stats->{lines_read}++;
+              print "$state->{linger_left} " if ($plan->{debug});
+              print_line($plan, $state, $stats, $line);
+              $state->{linger_left}--;
             }
           }
         } else {
-          print_line($conf, $lines, $line);
+          print_line($plan, $state, $stats, $line);
         }
       } else {  # --- NOT PRINTING ---
-        if ($conf->{start_lines}{$lines->{total}} or
-            ($conf->{start_regexp} and $line =~ $conf->{start_regexp})) {
-          $lines->{starts}++;
-          if ($conf->{lead}) {
-            print "Leading printing active: $conf->{lead}\n" if ($conf->{debug});
-            while (@{$lines->{remembered}}) {
-              my $remembered_line = shift @{$lines->{remembered}};
-              my $remembered_number = $lines->{total} - @{$lines->{remembered}} - 1;
-              print_line($conf, $lines, $remembered_line, $remembered_number);
+        if ($plan->{start_lines}{$state->{line_number}} or
+            ($plan->{start_regexp} and $line =~ $plan->{start_regexp})) {
+          $stats->{starts_matched}++;
+          if ($plan->{lead}) {
+            print "Leading printing active: $plan->{lead}\n" if ($plan->{debug});
+            while (@{$state->{lead_buffer}}) {
+              my $remembered_line = shift @{$state->{lead_buffer}};
+              my $remembered_number = $state->{line_number} - @{$state->{lead_buffer}} - 1;
+              print_line($plan, $state, $stats, $remembered_line, $remembered_number);
             }
           }
-          print_line($conf, $lines, $line);
-          if (($conf->{stop_regexp} and $line =~ $conf->{stop_regexp}) or
-              $conf->{stop_lines}{$lines->{total}}) {
-            my $lingering = $conf->{linger};
-            if ($lingering) {                                                  
-              print "lingering printing active, $lingering\n" if ($conf->{debug});
-              while ($lingering and $line = <$filehandle>) {
-                $lines->{total}++;
-                print "$lingering " if ($conf->{debug});
-                print_line($conf, $lines, $line);
-                $lingering--;
+          print_line($plan, $state, $stats, $line);
+          if (($plan->{stop_regexp} and $line =~ $plan->{stop_regexp}) or
+              $plan->{stop_lines}{$state->{line_number}}) {
+            $state->{linger_left} = $plan->{linger};
+            if ($state->{linger_left}) {
+              print "lingering printing active, $state->{linger_left}\n" if ($plan->{debug});
+              while ($state->{linger_left} and $line = <$filehandle>) {
+                $state->{line_number}++;
+                $stats->{lines_read}++;
+                print "$state->{linger_left} " if ($plan->{debug});
+                print_line($plan, $state, $stats, $line);
+                $state->{linger_left}--;
               }
             }
           } else {
-            $printing = 1;
+            $state->{printing} = 1;
           }
-        } elsif ($conf->{regexp} and $line =~ $conf->{regexp}) {
-          $lines->{$conf->{regexp}}++;
-          if ($conf->{lead}) {
-            print "leading printing active: $conf->{lead}\n" if ($conf->{debug});
-            while (@{$lines->{remembered}}) {
-              my $remembered_line = shift @{$lines->{remembered}};
-              my $remembered_number = $lines->{total} - @{$lines->{remembered}} - 1;
-              print_line($conf, $lines, $remembered_line, $remembered_number);
+        } elsif ($plan->{regexp} and $line =~ $plan->{regexp}) {
+          if ($plan->{lead}) {
+            print "leading printing active: $plan->{lead}\n" if ($plan->{debug});
+            while (@{$state->{lead_buffer}}) {
+              my $remembered_line = shift @{$state->{lead_buffer}};
+              my $remembered_number = $state->{line_number} - @{$state->{lead_buffer}} - 1;
+              print_line($plan, $state, $stats, $remembered_line, $remembered_number);
             }
           }
-          print_line($conf, $lines, $line);
-          my $lingering = $conf->{linger};
-          if ($lingering) {
-            print "Lingering Printing active, $lingering\n" if ($conf->{debug});
-            while ($lingering and $line = <$filehandle>) {
-              $lines->{total}++;
-              print "$lingering " if ($conf->{debug});
-              print_line($conf, $lines, $line);
-              $lingering--;
+          print_line($plan, $state, $stats, $line);
+          $state->{linger_left} = $plan->{linger};
+          if ($state->{linger_left}) {
+            print "Lingering Printing active, $state->{linger_left}\n" if ($plan->{debug});
+            while ($state->{linger_left} and $line = <$filehandle>) {
+              $state->{line_number}++;
+              $stats->{lines_read}++;
+              print "$state->{linger_left} " if ($plan->{debug});
+              print_line($plan, $state, $stats, $line);
+              $state->{linger_left}--;
             }
           }
         } else {
-          if ($conf->{lead}) {
-            push @{$lines->{remembered}}, $line;
-            if (@{$lines->{remembered}} > $conf->{lead}) {
-              shift @{$lines->{remembered}};
+          if ($plan->{lead}) {
+            push @{$state->{lead_buffer}}, $line;
+            if (@{$state->{lead_buffer}} > $plan->{lead}) {
+              shift @{$state->{lead_buffer}};
             }
           }
-          $lines->{'not printed'}++;
+          $stats->{lines_skipped}++;
         }
       }
     }
@@ -157,15 +166,15 @@ sub process_inde {
 }
 
 sub print_line {
-  my ($conf, $lines, $line, $line_number) = @_;
-  $line_number //= $lines->{total};
-  $lines->{printed}++;
-  printf "%5d ", $line_number if ($conf->{number});
+  my ($plan, $state, $stats, $line, $line_number) = @_;
+  $line_number //= $state->{line_number};
+  $stats->{lines_printed}++;
+  printf "%5d ", $line_number if ($plan->{number});
   print $line;
 }
 
-sub parse_args_inde {
-  my $conf = shift;
+sub parse_arguments {
+  my $plan = shift;
   my (@start_regexps, @stop_regexps, @regexps);
   my @args=('?','help','debug','usage');
   my @help=('print this message','print this message','set debugging flag','print short usage message');
@@ -195,77 +204,77 @@ sub parse_args_inde {
              "will terminate printing at line M, ignoring start/stop regexp's",
              "will print all lines between N and M ignoring all all regexp triggers");
   for (my $arg=$[; $arg<=$#args; $arg++) {
-    push ( @{$conf->{explanations}}, { arg => $args[$arg], explanation => $help[$arg] } );
+    push ( @{$plan->{explanations}}, { arg => $args[$arg], explanation => $help[$arg] } );
   }
   while ( @ARGV >= 1 ) {
     if ( $abbrev->{$ARGV[0]} ) {                       # have a valid argument, find which one
       if ( $abbrev->{$ARGV[0]} eq '-help' or  $abbrev->{$ARGV[0]} eq '-?' ) {
-        help($conf);
+        help($plan);
         shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-usage' ) {
       	print "$usage\n";
       	exit 0;
       } elsif ( $abbrev->{$ARGV[0]} eq '-debug' ) {
-        $conf->{debug} = 1;
+        $plan->{debug} = 1;
         print "user specified debugging flag set\n";
         shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-number' ) {
-        $conf->{number} = 1;
-        print "user asked us to number the output lines\n" if ($conf->{debug});
+        $plan->{number} = 1;
+        print "user asked us to number the output lines\n" if ($plan->{debug});
         shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-regexp' or  $abbrev->{$ARGV[0]} eq '-find' or  $abbrev->{$ARGV[0]} eq '-grep' ) {
         push( @regexps, qq($ARGV[1]) );
-        print "user specified '$ARGV[1]' as regexp to print\n" if ($conf->{debug});
+        print "user specified '$ARGV[1]' as regexp to print\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-on' or  $abbrev->{$ARGV[0]} eq '-start' or  $abbrev->{$ARGV[0]} eq '-begin' ) {
         push( @start_regexps, qq($ARGV[1]) );
-        print "user specified '$ARGV[1]' as regexp to be added to triggers to start printing\n" if ($conf->{debug});
+        print "user specified '$ARGV[1]' as regexp to be added to triggers to start printing\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-off' or  $abbrev->{$ARGV[0]} eq '-stop' or  $abbrev->{$ARGV[0]} eq '-end' ) {
         push( @stop_regexps, qq($ARGV[1]) );
-        print "user specified '$ARGV[1]' as regexp to be added to triggers to stop printing\n" if ($conf->{debug});
+        print "user specified '$ARGV[1]' as regexp to be added to triggers to stop printing\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-lead' ) {
-        $conf->{lead} = $ARGV[1];
-        print "user specified '$ARGV[1]' as number of lines to print before each trigger regexp\n" if ($conf->{debug});
+        $plan->{lead} = $ARGV[1];
+        print "user specified '$ARGV[1]' as number of lines to print before each trigger regexp\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-linger' ) {
-        $conf->{linger} = $ARGV[1];
-        print "user specified '$ARGV[1]' as number of lines to print after each terminate regexp\n" if ($conf->{debug});
+        $plan->{linger} = $ARGV[1];
+        print "user specified '$ARGV[1]' as number of lines to print after each terminate regexp\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-context' ) {
-        $conf->{lead}   = $ARGV[1];
-        $conf->{linger} = $ARGV[1];
-        print "user specified '$ARGV[1]' as number of lines to print before each trigger regexp\n" if ($conf->{debug});
-        print "and the same number of lines to print after each terminate regexp\n" if ($conf->{debug});
+        $plan->{lead}   = $ARGV[1];
+        $plan->{linger} = $ARGV[1];
+        print "user specified '$ARGV[1]' as number of lines to print before each trigger regexp\n" if ($plan->{debug});
+        print "and the same number of lines to print after each terminate regexp\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-file' ) {
-        push(@{$conf->{files}},"$ARGV[1]") if $ARGV[1];
-        print "add '$ARGV[1]' to list of files to scan\n" if ($conf->{debug});
+        push(@{$plan->{files}},"$ARGV[1]") if $ARGV[1];
+        print "add '$ARGV[1]' to list of files to scan\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } else {
         print STDERR "'$ARGV[0]' doesn't appear to be implemented yet... strange?\n";
         exit;
       }
     } elsif ( $ARGV[0] =~ m'^-?(\d+)\.\.+(\d+)$' ) {                                    # N to M
-      $conf->{start_lines}{$1}++;
-      $conf->{stop_lines}{$2}++;
-      print "user has requested printing of lines $1 to $2 inclusive\n" if ($conf->{debug});
+      $plan->{start_lines}{$1}++;
+      $plan->{stop_lines}{$2}++;
+      print "user has requested printing of lines $1 to $2 inclusive\n" if ($plan->{debug});
       shift(@ARGV);
     } elsif ( $ARGV[0] =~ m'^-?(\d+)\.\.$' ) {                                          # N on
-      $conf->{start_lines}{$1}++;
-      print "user has requested printing of lines starting at $1\n" if ($conf->{debug});
+      $plan->{start_lines}{$1}++;
+      print "user has requested printing of lines starting at $1\n" if ($plan->{debug});
       shift(@ARGV);
     } elsif ( $ARGV[0] =~ m'^-?\.\.(\d+)$' ) {                                          #   to M
-      $conf->{start_printing} = 1;
-      $conf->{stop_lines}{$1}++;
-      push( @{$conf->{ranges}}, { start=>undef, end=>$1 } );
-      print "user has requested printing of lines up to $1\n" if ($conf->{debug});
+      $plan->{start_printing} = 1;
+      $plan->{stop_lines}{$1}++;
+      push( @{$plan->{ranges}}, { start=>undef, end=>$1 } );
+      print "user has requested printing of lines up to $1\n" if ($plan->{debug});
       shift(@ARGV);
     } elsif ( $ARGV[0] =~ m'^-?(\d+)$' ) {                                              # just print line N
-      $conf->{start_lines}{$1}++;
-      $conf->{stop_lines}{$1}++;
-      print "user has requested printing of line $1\n" if ($conf->{debug});
+      $plan->{start_lines}{$1}++;
+      $plan->{stop_lines}{$1}++;
+      print "user has requested printing of line $1\n" if ($plan->{debug});
       shift(@ARGV);
     } elsif ( $ARGV[0] =~ m'^-?([^.]*)\.\.+([^.]*)$' ) {                                # START to STOP (at least one is not a number)
       my $front=$1;
@@ -273,60 +282,60 @@ sub parse_args_inde {
       if ($front eq '' and $back eq '') {
         print "'..' is not a valid option.\n";
       } elsif ($front eq '') { # ..SOMETHING (not a number)
-        print " ..X '$front' '$back'\n" if ($conf->{debug});
-        $conf->{start_printing} = 1;
+        print " ..X '$front' '$back'\n" if ($plan->{debug});
+        $plan->{start_printing} = 1;
         push( @stop_regexps, qq($back) );
       } elsif ($back eq '') { # SOMETHING.. (not a number)
-        print "X..  '$front' '$back'\n" if ($conf->{debug});
+        print "X..  '$front' '$back'\n" if ($plan->{debug});
         push( @start_regexps, qq($front) );
       } else {                # SOMETHING..SOMETHING_ELSE (at least one of which is not a number)
-        print "X..Y '$front' '$back'\n" if ($conf->{debug});
+        print "X..Y '$front' '$back'\n" if ($plan->{debug});
         if ( $front=~/^\d+$/ ) {
-          print "N..? '$front' '$back'\n" if ($conf->{debug});
-          $conf->{start_lines}{$front}++;
+          print "N..? '$front' '$back'\n" if ($plan->{debug});
+          $plan->{start_lines}{$front}++;
         } else {
-          print "X..? '$front' '$back'\n" if ($conf->{debug});
+          print "X..? '$front' '$back'\n" if ($plan->{debug});
           push( @start_regexps, qq($front) );
         }
         if ( $back=~/^\d+$/ ) {
-          print "?..N '$front' '$back'\n" if ($conf->{debug});
-          $conf->{stop_lines}{$back}++;
+          print "?..N '$front' '$back'\n" if ($plan->{debug});
+          $plan->{stop_lines}{$back}++;
         } else {
-          print "?..X '$front' '$back'\n" if ($conf->{debug});
+          print "?..X '$front' '$back'\n" if ($plan->{debug});
           push( @stop_regexps, qq($back) );
         }
       }
       shift(@ARGV);
     } else {
-      warn("$conf->{name}: Unknown option '$ARGV[0]'; assuming file to scan...\n") if ($conf->{debug});
-      push(@{$conf->{files}},shift(@ARGV));
+      warn("$plan->{name}: Unknown option '$ARGV[0]'; assuming file to scan...\n") if ($plan->{debug});
+      push(@{$plan->{files}},shift(@ARGV));
     }
 
     if (@start_regexps) {
       my $regexps_ored = join('|', @start_regexps);
-      $conf->{start_regexp} = qr/$regexps_ored/;
+      $plan->{start_regexp} = qr/$regexps_ored/;
     }
     if (@stop_regexps) {
       my $regexps_ored = join('|', @stop_regexps);
-      $conf->{stop_regexp} = qr/$regexps_ored/;
+      $plan->{stop_regexp} = qr/$regexps_ored/;
     }
     if (@regexps) {
       my $regexps_ored = join('|', @regexps);
-      $conf->{regexp} = qr/$regexps_ored/;
+      $plan->{regexp} = qr/$regexps_ored/;
     }
   }  # end while
-  if ($conf->{debug}) {
+  if ($plan->{debug}) {
     # print Dumper($abbrev);
-    pre_report($conf);
+    report_plan($plan);
   }
-  # if (@$ranges) { @$conf->{ranges} = sort { ( $conf->{ranges}->[$a]{start} <=> $conf->{ranges}->[$b]{start} ) || ( $conf->{ranges}->[$a]{end} <=> $conf->{ranges}->[$b]{end} ) } @$ranges }
+  # if (@$ranges) { @$plan->{ranges} = sort { ( $plan->{ranges}->[$a]{start} <=> $plan->{ranges}->[$b]{start} ) || ( $plan->{ranges}->[$a]{end} <=> $plan->{ranges}->[$b]{end} ) } @$ranges }
 }  # end parse_args
 
 sub help {
-  my ($conf,@args) = @_;
+  my ($plan,@args) = @_;
   select(STDOUT); $|=1; $\=''; 
-  if (@{$conf->{explanations}}) {
-    foreach my $explanation ( @{$conf->{explanations}} ) {
+  if (@{$plan->{explanations}}) {
+    foreach my $explanation ( @{$plan->{explanations}} ) {
       printf "%-16s\t%s\n", $explanation->{arg}, $explanation->{explanation};
     }
   } else {
@@ -338,19 +347,19 @@ sub help {
   exit 0;
 }
 
-sub pre_report {
-  my $conf = shift;
+sub report_plan {
+  my $plan = shift;
   print "singles\n";
-  print "set regexp to '$conf->{regexp}'\n" if ($conf->{regexp});
+  print "set regexp to '$plan->{regexp}'\n" if ($plan->{regexp});
   print "starts\n";
-  print "set start  to '$conf->{start_regexp}'\n" if ($conf->{start_regexp});
-  print "set starts at: " . join(', ', keys %{$conf->{start_lines}}) . "\n" if ($conf->{start_lines});
+  print "set start  to '$plan->{start_regexp}'\n" if ($plan->{start_regexp});
+  print "set starts at: " . join(', ', keys %{$plan->{start_lines}}) . "\n" if ($plan->{start_lines});
   print "\nstops\n";
-  print "set stop   to '$conf->{stop_regexp}'\n" if ($conf->{stop_regexp});
-  print "set stops  at: " . join(', ', keys %{$conf->{stop_lines}}) . "\n" if ($conf->{stop_lines});
+  print "set stop   to '$plan->{stop_regexp}'\n" if ($plan->{stop_regexp});
+  print "set stops  at: " . join(', ', keys %{$plan->{stop_lines}}) . "\n" if ($plan->{stop_lines});
   print "\nfiles?\n";
-  print "$_\n" foreach (@{$conf->{files}});
-  print "lead, linger: $conf->{lead}, $conf->{linger}\n";
+  print "$_\n" foreach (@{$plan->{files}});
+  print "lead, linger: $plan->{lead}, $plan->{linger}\n";
   print "=" x 40 . "\n";
 }
 
