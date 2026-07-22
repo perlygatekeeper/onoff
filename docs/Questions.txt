@@ -1,0 +1,6 @@
+Questions that need explicit policy:
+  Can a second range begin while another is active?
+  Can ranges nest?
+  If two pairs start on the same line, which wins?
+  What happens when the file ends before the paired stop?
+  Should paired ranges have separate lead and linger values?

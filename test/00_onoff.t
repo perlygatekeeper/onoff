@@ -1,55 +1,112 @@
-#!/usr/bin/env perl 
+#!/usr/bin/env perl
 
-use Test::Most tests => 1;
-use Data::Dumper;
+use strict;
+use warnings;
 
-# this code tests Thingiverse module, it was meant as an example of Test::Most and needs
-# to be converted to test onoff
+use Test::More;
+use File::Spec;
+use FindBin qw($Bin);
+use IPC::Open3;
+use Symbol qw(gensym);
 
-my ($thing, $id, $public_url, $url, $layout_url, $creator_id, $default_image_id);
+my $root   = File::Spec->catdir($Bin, '..');
+my $onoff = File::Spec->catfile($root, 'onoff');
+my $sample = File::Spec->catfile($root, 'examples', 'text2.txt');
 
-    is( $thing->id,                  $id,                                    'id accessor' ); 
-    ok( $thing->creator->isa('Thingiverse::User'),                           'is the creator a Thingiverse::User object' ); 
-    is( $thing->creator->id,         $creator_id,                            'creator_id correct' ); 
+sub run_onoff {
+  my ($stdin, @args) = @_;
+  my $error = gensym;
+  my $pid = open3(my $input, my $output, $error, $^X, $onoff, @args);
 
-    ok( $thing->default_image->isa('Thingiverse::Image'),                    'is the default_image a Thingiverse::Image object' ); 
-    is( $thing->default_image->id,   $default_image_id,                      "default_images's id correct" ); 
+  if (defined $stdin) {
+    print {$input} $stdin;
+  }
+  close $input;
 
-  like( $thing->name,                qr(Rounded Rectangular Parallelepiped),                              'name                accessor' ); 
-  like( $thing->instructions,        qr(Using the following options),                                     'instructions        accessor' ); 
-  like( $thing->instructions_html,   qr(Using the following options),                                     'instructions_html   accessor' ); 
-  like( $thing->description,         qr(Customized version of http://www.thingiverse.com/thing:313179),   'description         accessor' ); 
-  like( $thing->description_html,    qr(Customized version of .*http://www.thingiverse.com/thing:313179), 'description_html    accessor' ); 
-  like( $thing->license,             qr(Creative Commons),                                                'license             accessor' ); 
-    is( $thing->public_url,          $public_url,                                                         'public_url          accessor' ); 
-    is( $thing->url,                 $url,                                                                'url                 accessor' ); 
-    is( $thing->images_url,          $url . '/images',                                                    'images_url          accessor' ); 
-    is( $thing->categories_url,      $url . '/categories',                                                'categories_url      accessor' ); 
-    is( $thing->ancestors_url,       $url . '/ancestors',                                                 'ancestors_url       accessor' ); 
-    is( $thing->tags_url,            $url . '/tags',                                                      'tags_url            accessor' ); 
-    is( $thing->files_url,           $url . '/files',                                                     'files_url           accessor' ); 
-    is( $thing->derivatives_url,     $url . '/derivatives',                                               'derivatives_url     accessor' ); 
-    is( $thing->likes_url,           $url . '/likes',                                                     'likes_url           accessor' ); 
-    is( $thing->layouts_url,         $layout_url,                                                         'layouts_url         accessor' ); 
-  like( $thing->is_wip,              qr(true|false),                                                      'is_wip              accessor' ); 
-  like( $thing->is_liked,            qr(true|false),                                                      'is_liked            accessor' ); 
-  like( $thing->is_private,          qr(true|false),                                                      'is_private          accessor' ); 
-  like( $thing->in_library,          qr(true|false),                                                      'in_library          accessor' ); 
-  like( $thing->is_collected,        qr(true|false),                                                      'is_collected        accessor' ); 
-  like( $thing->is_purchased,        qr(true|false),                                                      'is_purchased        accessor' ); 
-  like( $thing->is_published,        qr(true|false),                                                      'is_published        accessor' ); 
-  like( $thing->added,               qr(^2014-04-29T\d\d:\d\d:\d\d\+00:00$),                              'added               accessor' );
-  like( $thing->modified,            qr(^2014-04-29T\d\d:\d\d:\d\d\+00:00$),                              'modified            accessor' );
-  like( $thing->like_count,          qr(^\d+),                                                            'like_count          accessor' );
-  like( $thing->file_count,          qr(^\d+),                                                            'file_count          accessor' );
-  like( $thing->layout_count,        qr(^\d+),                                                            'layout_count        accessor' );
-  like( $thing->collect_count,       qr(^\d+),                                                            'collect_count       accessor' );
-  like( $thing->print_history_count, qr(^\d+),                                                            'print_history_count accessor' );
+  local $/;
+  my $stdout = <$output> // '';
+  my $stderr = <$error>  // '';
+  waitpid $pid, 0;
 
-
-if ( 0 ) {
-  print "nothing\n";
+  return ($stdout, $stderr, $? >> 8);
 }
 
-exit 0;
-__END__
+my ($stdout, $stderr, $status) = run_onoff(undef, '13', $sample);
+is($stdout, "    13\tThirteen\n", 'prints one numbered input line');
+is($stderr, '', 'one-line selection has no diagnostics');
+is($status, 0, 'one-line selection succeeds');
+
+($stdout, $stderr, $status) = run_onoff(undef, '4..7', $sample);
+is(
+  $stdout,
+  "     4\tFour\n     5\tFive\n     6\tSix\n     7\tSeven\n",
+  'prints an inclusive numeric range',
+);
+
+($stdout, $stderr, $status) = run_onoff(undef, '..3', $sample);
+is(
+  $stdout,
+  "     1\tOne\n     2\tTwo\n     3\tThree\n",
+  'prints from the beginning through a numbered line',
+);
+
+($stdout, $stderr, $status) = run_onoff(undef, '107..', $sample);
+is(
+  $stdout,
+  "   107\tHundred Seven\n   108\tHundred Eight\n   109\tHundred Nine\n",
+  'prints from a numbered line through end of file',
+);
+
+my $sections = <<'TEXT';
+outside
+BEGIN
+inside
+END
+outside again
+BEGIN
+second
+END
+TEXT
+
+($stdout, $stderr, $status) = run_onoff(
+  $sections, '-start', '^BEGIN$', '-stop', '^END$', '-',
+);
+is(
+  $stdout,
+  "BEGIN\ninside\nEND\nBEGIN\nsecond\nEND\n",
+  'prints repeated inclusive regexp ranges from standard input',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  $sections, 'BEGIN..END', '-',
+);
+is(
+  $stdout,
+  "BEGIN\ninside\nEND\nBEGIN\nsecond\nEND\n",
+  'supports the compact regexp range form',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "zero\nmatch\ntwo\n", '-regexp', '^match$', '-context', '1', '-',
+);
+is($stdout, "zero\nmatch\ntwo\n", 'prints a match with context');
+
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN\ninside\nEND\nafter\n", '-start', '^BEGIN$', '-stop', '^END$',
+  '-linger', '1', '-number', '-',
+);
+is(
+  $stdout,
+  "    1 BEGIN\n    2 inside\n    3 END\n    4 after\n",
+  'numbers lingering output correctly',
+);
+
+($stdout, $stderr, $status) = run_onoff(undef, '-usage');
+like($stdout, qr/^usage:/, 'usage option prints the synopsis');
+is($status, 0, 'usage option succeeds');
+
+($stdout, $stderr, $status) = run_onoff(undef, '-help');
+like($stdout, qr/-start\s+regexp to trigger printing/, 'help describes options');
+is($status, 0, 'help option succeeds');
+
+done_testing();
