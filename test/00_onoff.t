@@ -1003,4 +1003,123 @@ is(
   'an input file is unchanged after collision rejection',
 );
 
+my $interactive_root = tempdir(CLEANUP => 1);
+my $responses_file = File::Spec->catfile($interactive_root, 'responses.txt');
+sub write_responses {
+  my @responses = @_;
+  open my $handle, '>', $responses_file
+    or die "Cannot write '$responses_file': $!";
+  print {$handle} join("\n", @responses), "\n";
+  close $handle or die "Cannot close '$responses_file': $!";
+}
+
+my $interactive_input = <<'TEXT';
+heading
+before first
+BEGIN
+first
+END
+between
+BEGIN
+second
+END
+TEXT
+
+write_responses('no', 'yes');
+($stdout, $stderr, $status) = run_onoff(
+  $interactive_input,
+  '--interactive', '--responses', $responses_file,
+  '--start', '^BEGIN$', '--end', '^END$',
+);
+is(
+  $stdout,
+  "BEGIN\nsecond\nEND\n",
+  'interactive review can reject one range and accept a later range',
+);
+like(
+  $stderr,
+  qr/Candidate range: <stdin>:3 \(rule default\).*before first.*BEGIN/s,
+  'the review prompt identifies the candidate and shows nearby context',
+);
+unlike($stdout, qr/Start printing/, 'interactive prompts never enter standard output');
+is($status, 0, 'an accepted interactive range succeeds');
+
+write_responses('no', 'yes');
+($stdout, $stderr, $status) = run_onoff(
+  $interactive_input,
+  '--interactive', '--responses', $responses_file,
+  '--start', '^BEGIN$', '--end', '^END$', '--lead', '1',
+);
+is(
+  $stdout,
+  "between\nBEGIN\nsecond\nEND\n",
+  'rejecting a range discards its pending lead context',
+);
+
+write_responses('all');
+($stdout, $stderr, $status) = run_onoff(
+  $interactive_input,
+  '--interactive', '--responses', $responses_file,
+  '--start', '^BEGIN$', '--end', '^END$',
+);
+is(
+  $stdout,
+  "BEGIN\nfirst\nEND\nBEGIN\nsecond\nEND\n",
+  'all accepts the current and remaining candidate ranges',
+);
+my $prompt_count = () = $stderr =~ /Start printing\?/g;
+is($prompt_count, 1, 'all suppresses later prompts');
+
+write_responses('quit');
+($stdout, $stderr, $status) = run_onoff(
+  $interactive_input,
+  '--interactive', '--responses', $responses_file,
+  '--start', '^BEGIN$', '--end', '^END$',
+);
+is($stdout, '', 'quit stops before printing the candidate range');
+is($status, 1, 'quitting before a selection returns the no-selection status');
+
+($stdout, $stderr, $status) = run_onoff(
+  $interactive_input,
+  '--interactive', '--start', '^BEGIN$', '--end', '^END$',
+);
+is($status, 2, 'interactive mode refuses a non-terminal input environment');
+like(
+  $stderr,
+  qr/requires a terminal or --responses FILE/,
+  'the non-terminal diagnostic recommends the explicit response source',
+);
+
+for my $invalid_interactive_case (
+  [
+    ['--responses', $responses_file, '--start', '^BEGIN$', '--end', '^END$'],
+    qr/--responses requires --interactive/,
+    'responses without interactive mode',
+  ],
+  [
+    ['--interactive', '--responses', $responses_file, '--regexp', '^BEGIN$'],
+    qr/requires a start\/end range/,
+    'interactive review without a range',
+  ],
+  [
+    [
+      '--interactive', '--responses', $responses_file, '--list-ranges',
+      '--start', '^BEGIN$', '--end', '^END$',
+    ],
+    qr/cannot be combined with --list-ranges/,
+    'interactive review combined with list-ranges',
+  ],
+) {
+  ($stdout, $stderr, $status) = run_onoff(
+    $interactive_input,
+    @{$invalid_interactive_case->[0]},
+  );
+  is($status, 2, "$invalid_interactive_case->[2] is rejected");
+  like(
+    $stderr,
+    $invalid_interactive_case->[1],
+    "$invalid_interactive_case->[2] is explained",
+  );
+}
+
 done_testing();

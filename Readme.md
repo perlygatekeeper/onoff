@@ -74,6 +74,8 @@ Range boundaries are included in the output.
 --context N         include N lines before and after a trigger
 --number            prefix output with line numbers
 --list-ranges       report matched ranges instead of their contents
+--interactive       ask whether to accept each candidate range
+--responses FILE    read interactive answers from a file instead of a terminal
 --file FILE         add an input file explicitly
 --help              show detailed option help
 --usage             show a short usage summary
@@ -211,6 +213,39 @@ onoff \
 Non-append outputs are written through temporary files and finalized only
 after successful processing. Append mode cannot be rolled back after an error.
 
+### Interactive review
+
+Review each matching start boundary before its range is selected:
+
+```sh
+onoff --interactive --start '^BEGIN$' --end '^END$' file.txt
+```
+
+Each prompt shows the input filename, matching line number, rule name, matching
+line, and up to two preceding lines. The available responses are:
+
+```text
+yes (y)     select this range
+no (n)      skip through this range's end boundary
+all (a)     select this and all remaining candidate ranges
+quit (q)    stop processing
+```
+
+Prompts and context use the controlling terminal, so selected standard output
+remains safe for a pipeline or redirection. Without a usable terminal,
+interactive mode exits with an error. For a repeatable scripted review, supply
+one answer per line with `--responses FILE`; prompts are then written to
+standard error:
+
+```sh
+onoff --interactive --responses answers.txt \
+  --start '^BEGIN$' --end '^END$' file.txt
+```
+
+Interactive review applies to start/end ranges, including named rules. It
+cannot be combined with `--list-ranges`; use the listing first when a
+non-interactive inventory is sufficient.
+
 ## Examples
 
 Print one line:
@@ -325,6 +360,9 @@ onoff --exclude-start --exclude-end 'BEGIN..END' file.txt
   inclusion policy.
 - When several inactive rules start on one line, the first declared rule wins.
 - While a rule is active, other starts are ignored until its paired end matches.
+- Interactive review occurs at each candidate start boundary; rejecting one
+  skips input through its paired end boundary.
+- Interactive prompts never use standard output.
 - Rule destinations are opened once and reused for static output.
 - Dynamic destinations are expanded from captures and range metadata.
 - Selected content is written only to its rule destination when one is set.
@@ -353,6 +391,8 @@ onoff --exclude-start --exclude-end 'BEGIN..END' file.txt
   destinations are opened when ranges start.
 - Configuration files and nested or overlapping output rules are not yet
   supported.
+- Interactive prompts show preceding context but cannot show following lines
+  without buffering input.
 
 ## Project commands
 

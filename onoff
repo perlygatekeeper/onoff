@@ -12,9 +12,9 @@ use File::Spec;
 use File::Temp qw(tempfile);
 use Text::Abbrev;
 
-my $last_mod_date='Wed, Jul 22, 2026';
+my $last_mod_date='Thu, Jul 23, 2026';
 
-my $version="1.2";
+my $version="1.3";
 
 my $author="Dr. Steven Parker";
 my $copyright="$last_mod_date. All rights reserved.";
@@ -27,6 +27,7 @@ $usage .= "[ ( --off | --end | --stop | --end-before ) stop_regexp ]\n\t";
 $usage .= "[ ( --regexp | --find | --grep ) regexp ]\n\t";
 $usage .= "[ --exclude-start ] [ --exclude-end ]\n\t";
 $usage .= "[ --fixed ] [ --ignore-case ] [ --list-ranges ]\n\t";
+$usage .= "[ --interactive [ --responses FILE ] ]\n\t";
 $usage .= "[ --output FILE | --output-template TEMPLATE ] [ --output-dir DIR ]\n\t";
 $usage .= "[ --append | --force ] [ --otherwise FILE ]\n\t";
 $usage .= "[ --lead N --linger M | --context N ]\n\t";
@@ -59,6 +60,7 @@ sub initialize_plan {
     fixed           => 0,
     force           => 0,
     ignore_case     => 0,
+    interactive     => 0,
     include_end     => 1,
     include_start   => 1,
     lead           => 0,
@@ -72,6 +74,7 @@ sub initialize_plan {
     output_dir_set => 0,
     output_dynamic => 0,
     output_template => undef,
+    responses       => undef,
     ranges         => [],
     end_pattern_policies   => {},
     rules          => [],
@@ -102,7 +105,13 @@ sub execute_plan {
     output_files        => 0,
   };
   my $output_manager = initialize_output_manager($plan, $stats);
+  my $review = initialize_interactive_review($plan, $stats);
+  if ($review->{failed}) {
+    finalize_output_manager($plan, $output_manager, $stats);
+    return $stats;
+  }
 
+  FILE:
   foreach my $file (@{$plan->{files}}) {
     $output_manager->{current_file} = $file;
     my ($initial_rule) = grep { $_->{start_at_beginning} } @{$plan->{rules}};
@@ -117,6 +126,8 @@ sub execute_plan {
       linger_left        => 0,
       output_sink        => undef,
       captures           => empty_captures(),
+      rejected_rule      => undef,
+      review_context     => [],
     };
 
     my $filehandle;
@@ -138,6 +149,17 @@ sub execute_plan {
     while (my $line = <$filehandle>) {
       $state->{line_number}++;
       $stats->{lines_read}++;
+
+      if ($state->{rejected_rule}) {
+        my $rejected_end = rule_end_matches(
+          $state->{rejected_rule},
+          $line,
+          $state->{line_number},
+        );
+        reject_line($plan, $output_manager, $stats, $state, $line);
+        $state->{rejected_rule} = undef if $rejected_end;
+        next;
+      }
 
       my $was_active = $state->{active_rule};
       my $rule = $was_active;
@@ -163,6 +185,34 @@ sub execute_plan {
             last;
           }
         }
+      }
+
+      if ($start_event && $plan->{interactive} && !$review->{accept_all}) {
+        my $answer = review_candidate(
+          $review,
+          $file,
+          $state->{line_number},
+          $line,
+          $state->{review_context},
+          $rule->{name},
+        );
+        if ($answer eq 'quit') {
+          $review->{quit} = 1;
+          discard_lead_buffer($plan, $output_manager, $stats, $state);
+          reject_line($plan, $output_manager, $stats, $state, $line);
+          last;
+        }
+        if ($answer eq 'no') {
+          $state->{active_rule} = undef;
+          $state->{active_range_start} = undef;
+          $state->{rejected_rule} = $rule;
+          discard_lead_buffer($plan, $output_manager, $stats, $state);
+          reject_line($plan, $output_manager, $stats, $state, $line);
+          $state->{rejected_rule} = undef
+            if rule_end_matches($rule, $line, $state->{line_number});
+          next;
+        }
+        $review->{accept_all} = 1 if $answer eq 'all';
       }
 
       my $end_match =
@@ -322,6 +372,7 @@ sub execute_plan {
       if (!$state->{active_rule} && !$state->{linger_left}) {
         $state->{output_sink} = undef;
       }
+      remember_review_context($state, $line);
     }
 
     if ($state->{active_rule}
@@ -350,8 +401,10 @@ sub execute_plan {
       warn "Cannot close '$file': $!\n";
       $stats->{errors}++;
     }
+    last FILE if $review->{quit};
   }
 
+  close_interactive_review($review, $stats);
   finalize_output_manager($plan, $output_manager, $stats);
 
   if ($plan->{list_ranges}) {
@@ -368,6 +421,108 @@ sub execute_plan {
   }
 
   return $stats;
+}
+
+sub initialize_interactive_review {
+  my ($plan, $stats) = @_;
+  return { enabled => 0 } unless $plan->{interactive};
+
+  my ($input, $output, $close_input);
+  if (defined $plan->{responses}) {
+    if (!open($input, '<', $plan->{responses})) {
+      runtime_error($stats, "cannot read responses '$plan->{responses}': $!");
+      return { enabled => 0, failed => 1 };
+    }
+    $output = \*STDERR;
+    $close_input = 1;
+  } else {
+    if (!open($input, '+<', '/dev/tty')) {
+      runtime_error(
+        $stats,
+        'interactive mode requires a terminal or --responses FILE',
+      );
+      return { enabled => 0, failed => 1 };
+    }
+    $output = $input;
+    $close_input = 1;
+  }
+
+  return {
+    accept_all  => 0,
+    close_input => $close_input,
+    enabled     => 1,
+    input       => $input,
+    output      => $output,
+    quit        => 0,
+  };
+}
+
+sub close_interactive_review {
+  my ($review, $stats) = @_;
+  return unless $review->{close_input} && $review->{input};
+  runtime_error($stats, "cannot close interactive response input: $!")
+    unless close($review->{input});
+}
+
+sub review_candidate {
+  my ($review, $file, $line_number, $line, $context, $rule_name) = @_;
+  return 'yes' unless $review->{enabled};
+  my $display_file = $file eq '-' ? '<stdin>' : $file;
+  my $output = $review->{output};
+
+  print {$output} "\nCandidate range: $display_file:$line_number";
+  print {$output} " (rule $rule_name)" if defined $rule_name;
+  print {$output} "\n";
+  for my $previous (@{$context}) {
+    printf {$output} "  %5d | %s", $previous->{number}, $previous->{text};
+  }
+  printf {$output} "> %5d | %s", $line_number, $line;
+
+  while (1) {
+    print {$output} "Start printing? [y]es, [n]o, [a]ll, [q]uit: ";
+    my $response = readline($review->{input});
+    if (!defined $response) {
+      print {$output} "\n";
+      return 'quit';
+    }
+    $response =~ s/^\s+|\s+$//g;
+    my %answers = (
+      a => 'all', all => 'all',
+      n => 'no', no => 'no',
+      q => 'quit', quit => 'quit',
+      y => 'yes', yes => 'yes',
+    );
+    if (exists $answers{lc $response}) {
+      print {$output} "\n" unless $response =~ /\n$/;
+      return $answers{lc $response};
+    }
+    print {$output} "Please answer yes, no, all, or quit.\n";
+  }
+}
+
+sub remember_review_context {
+  my ($state, $line) = @_;
+  push @{$state->{review_context}}, {
+    number => $state->{line_number},
+    text   => $line,
+  };
+  shift @{$state->{review_context}} while @{$state->{review_context}} > 2;
+}
+
+sub reject_line {
+  my ($plan, $output_manager, $stats, $state, $line) = @_;
+  $stats->{lines_skipped}++;
+  write_otherwise($plan, $output_manager, $stats, $line);
+  remember_review_context($state, $line);
+}
+
+sub discard_lead_buffer {
+  my ($plan, $output_manager, $stats, $state) = @_;
+  for my $buffered (@{$state->{lead_buffer}}) {
+    $stats->{lines_skipped}++;
+    write_otherwise($plan, $output_manager, $stats, $buffered->{text});
+  }
+  $state->{lead_buffer} = [];
 }
 
 sub match_rule_start {
@@ -728,7 +883,7 @@ sub parse_arguments {
     output output-template output-dir otherwise on-duplicate
     append force
     exclude-start exclude-end
-    fixed ignore-case list-ranges
+    fixed ignore-case list-ranges interactive responses
   );
   @options = map { "-$_" } @options;
   my $abbrev = abbrev @options;
@@ -737,7 +892,7 @@ sub parse_arguments {
     regexp find grep
     on start begin off stop end
     number lead linger context file
-    fixed ignore-case list-ranges
+    fixed ignore-case list-ranges interactive
   );
   my $legacy_abbrev = abbrev @legacy_options;
   $abbrev->{$_} = $legacy_abbrev->{$_} for keys %{$legacy_abbrev};
@@ -746,7 +901,7 @@ sub parse_arguments {
     -on -start -begin -start-after
     -off -stop -end -end-before
     -lead -linger -context -file -rule
-    -output -output-template -output-dir -otherwise -on-duplicate
+    -output -output-template -output-dir -otherwise -on-duplicate -responses
   );
 
   $plan->{explanations} = [
@@ -774,6 +929,8 @@ sub parse_arguments {
     { arg => '--context N', explanation => 'print N lines before and after a trigger' },
     { arg => '--number', explanation => 'prefix output with line numbers' },
     { arg => '--list-ranges', explanation => 'list matched ranges without their contents' },
+    { arg => '--interactive', explanation => 'review each candidate start boundary' },
+    { arg => '--responses FILE', explanation => 'read interactive answers from FILE' },
     { arg => '--file FILE', explanation => 'add an input file' },
     { arg => '--debug', explanation => 'show parsing and processing details' },
     { arg => 'N | N.. | ..M | N..M', explanation => 'select numeric lines or ranges' },
@@ -806,6 +963,10 @@ sub parse_arguments {
         exit 0;
       } elsif ($option eq '-debug') {
         $plan->{debug} = 1;
+      } elsif ($option eq '-interactive') {
+        $plan->{interactive} = 1;
+      } elsif ($option eq '-responses') {
+        $plan->{responses} = $value;
       } elsif ($option eq '-rule') {
         $current_rule = {
           end_pattern_policies   => {},
@@ -963,6 +1124,10 @@ sub validate_plan {
   my $plan = shift;
   validate_nonnegative_integer('--lead', $plan->{lead});
   validate_nonnegative_integer('--linger', $plan->{linger});
+  usage_error('--responses requires --interactive')
+    if defined $plan->{responses} && !$plan->{interactive};
+  usage_error('--interactive cannot be combined with --list-ranges')
+    if $plan->{interactive} && $plan->{list_ranges};
   usage_error('--append and --force cannot be used together')
     if $plan->{append} && $plan->{force};
   usage_error("--on-duplicate must be 'error', 'number', or 'append'")
@@ -1044,6 +1209,8 @@ sub validate_plan {
       && !$has_explicit_rules;
 
   $plan->{has_range_conditions} = @{$plan->{rules}} > 0;
+  usage_error('--interactive requires a start/end range')
+    if $plan->{interactive} && !$plan->{has_range_conditions};
 }
 
 sub validate_output_name {

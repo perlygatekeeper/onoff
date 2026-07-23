@@ -204,6 +204,8 @@ ranges, unterminated ranges, output files, and lines written.
 Phase 6: Interactive review
 ---------------------------
 
+Status: complete.
+
 Add an optional terminal-oriented mode for reviewing candidate boundaries or
 complete ranges.
 
@@ -214,8 +216,15 @@ context. Suggested responses are yes, no, all, and quit. Prompts must never be
 mixed into selected standard output, and interactive mode should refuse to run
 without a usable terminal unless an explicit alternative is provided.
 
-An initial --list-ranges report may prove more useful than prompting during a
-streaming scan and should be implemented first.
+Implemented start-boundary review preserves streaming operation. Prompts show
+the filename, line number, rule, matching line, and two preceding context
+lines. Responses are yes, no, all, and quit. Prompts use the controlling
+terminal and never standard output. --responses FILE provides an explicit,
+repeatable alternative when no terminal is available.
+
+--list-ranges remains the non-interactive inventory mode and was implemented
+before prompting. Complete-range review and following-line prompt context
+would require buffering and are not currently planned.
 
 
 Documentation and examples
