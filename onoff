@@ -8,7 +8,7 @@ use warnings;
 use Text::Abbrev;
 use Data::Dumper;
 
-my $last_mod_date='Wed, Jun 21, 2023';
+my $last_mod_date='Wed, Jul 22, 2026';
 
 my $version="1.2";
 
@@ -29,10 +29,13 @@ $usage .= "[ [ -file ] file1 file2 .. ]";
 my $plan = initialize_plan();
 
 parse_arguments($plan, @ARGV);
+validate_plan($plan);
+push @{$plan->{files}}, '-' unless @{$plan->{files}};
 print Dumper($plan) if ($plan->{debug});
-execute_plan($plan);
+my $stats = execute_plan($plan);
 
-exit 0;
+exit 2 if $stats->{errors};
+exit($stats->{lines_printed} ? 0 : 1);
 
 sub initialize_plan {
   return {
@@ -51,6 +54,16 @@ sub initialize_plan {
 
 sub execute_plan {
   my $plan = shift;
+  my $stats = {
+    ends_matched   => 0,
+    errors         => 0,
+    files_processed => 0,
+    lines_printed  => 0,
+    lines_read     => 0,
+    lines_skipped  => 0,
+    starts_matched => 0,
+  };
+
   foreach my $file (@{$plan->{files}}) {
     my $state = {
       active_rule => undef,
@@ -60,109 +73,89 @@ sub execute_plan {
       linger_left => 0,
       printing    => $plan->{start_printing},
     };
-    my $stats = {
-      ends_matched   => 0,
-      lines_printed  => 0,
-      lines_read     => 0,
-      lines_skipped  => 0,
-      starts_matched => 0,
-    };
 
     my $filehandle;
     if ($file eq '-') {
-      open($filehandle, '<-') or die("Cannot read from STDIN: $!\n");
+      if (!open($filehandle, '<-')) {
+        warn "Cannot read from STDIN: $!\n";
+        $stats->{errors}++;
+        next;
+      }
     } else {
-      open($filehandle, '<', $file) or die("Cannot read from '$file': $!\n");
+      if (!open($filehandle, '<', $file)) {
+        warn "Cannot read from '$file': $!\n";
+        $stats->{errors}++;
+        next;
+      }
     }
+    $stats->{files_processed}++;
 
     while (my $line = <$filehandle>) {
       $state->{line_number}++;
       $stats->{lines_read}++;
-      if ($state->{printing}) {  # --- PRINTING ---
-        if ($plan->{stop_lines}{$state->{line_number}} or
-            ($plan->{stop_regexp} and $line =~ $plan->{stop_regexp})) {
-          $stats->{ends_matched}++;
-          if ($plan->{print_stops}) {
-            print_line($plan, $state, $stats, $line);
-            $state->{printing} = 0;
-          }
-          $state->{linger_left} = $plan->{linger};
-          if ($state->{linger_left}) {
-            print "Lingering printing active, $state->{linger_left}\n" if ($plan->{debug});
-            while ($state->{linger_left} and $line = <$filehandle>) {
-              $state->{line_number}++;
-              $stats->{lines_read}++;
-              print "$state->{linger_left} " if ($plan->{debug});
-              print_line($plan, $state, $stats, $line);
-              $state->{linger_left}--;
-            }
-          }
-        } else {
-          print_line($plan, $state, $stats, $line);
+
+      my $was_printing = $state->{printing};
+      my $start_match =
+        $plan->{start_lines}{$state->{line_number}} ||
+        ($plan->{start_regexp} && $line =~ $plan->{start_regexp});
+      my $end_match =
+        $plan->{stop_lines}{$state->{line_number}} ||
+        ($plan->{stop_regexp} && $line =~ $plan->{stop_regexp});
+      my $single_match = $plan->{regexp} && $line =~ $plan->{regexp};
+      my $active_end = ($was_printing || $start_match) && $end_match;
+      my $within_linger = $state->{linger_left} > 0;
+
+      $stats->{starts_matched}++ if $start_match;
+      $stats->{ends_matched}++ if $active_end;
+
+      if ($start_match || $single_match) {
+        while (@{$state->{lead_buffer}}) {
+          my $buffered = shift @{$state->{lead_buffer}};
+          print_line(
+            $plan,
+            $state,
+            $stats,
+            $buffered->{text},
+            $buffered->{number},
+          );
         }
-      } else {  # --- NOT PRINTING ---
-        if ($plan->{start_lines}{$state->{line_number}} or
-            ($plan->{start_regexp} and $line =~ $plan->{start_regexp})) {
-          $stats->{starts_matched}++;
-          if ($plan->{lead}) {
-            print "Leading printing active: $plan->{lead}\n" if ($plan->{debug});
-            while (@{$state->{lead_buffer}}) {
-              my $remembered_line = shift @{$state->{lead_buffer}};
-              my $remembered_number = $state->{line_number} - @{$state->{lead_buffer}} - 1;
-              print_line($plan, $state, $stats, $remembered_line, $remembered_number);
-            }
-          }
-          print_line($plan, $state, $stats, $line);
-          if (($plan->{stop_regexp} and $line =~ $plan->{stop_regexp}) or
-              $plan->{stop_lines}{$state->{line_number}}) {
-            $state->{linger_left} = $plan->{linger};
-            if ($state->{linger_left}) {
-              print "lingering printing active, $state->{linger_left}\n" if ($plan->{debug});
-              while ($state->{linger_left} and $line = <$filehandle>) {
-                $state->{line_number}++;
-                $stats->{lines_read}++;
-                print "$state->{linger_left} " if ($plan->{debug});
-                print_line($plan, $state, $stats, $line);
-                $state->{linger_left}--;
-              }
-            }
-          } else {
-            $state->{printing} = 1;
-          }
-        } elsif ($plan->{regexp} and $line =~ $plan->{regexp}) {
-          if ($plan->{lead}) {
-            print "leading printing active: $plan->{lead}\n" if ($plan->{debug});
-            while (@{$state->{lead_buffer}}) {
-              my $remembered_line = shift @{$state->{lead_buffer}};
-              my $remembered_number = $state->{line_number} - @{$state->{lead_buffer}} - 1;
-              print_line($plan, $state, $stats, $remembered_line, $remembered_number);
-            }
-          }
-          print_line($plan, $state, $stats, $line);
-          $state->{linger_left} = $plan->{linger};
-          if ($state->{linger_left}) {
-            print "Lingering Printing active, $state->{linger_left}\n" if ($plan->{debug});
-            while ($state->{linger_left} and $line = <$filehandle>) {
-              $state->{line_number}++;
-              $stats->{lines_read}++;
-              print "$state->{linger_left} " if ($plan->{debug});
-              print_line($plan, $state, $stats, $line);
-              $state->{linger_left}--;
-            }
+      }
+
+      if ($was_printing || $start_match || $single_match || $within_linger) {
+        print_line($plan, $state, $stats, $line);
+      } else {
+        if ($plan->{lead}) {
+          push @{$state->{lead_buffer}}, {
+            number => $state->{line_number},
+            text   => $line,
+          };
+          if (@{$state->{lead_buffer}} > $plan->{lead}) {
+            shift @{$state->{lead_buffer}};
+            $stats->{lines_skipped}++;
           }
         } else {
-          if ($plan->{lead}) {
-            push @{$state->{lead_buffer}}, $line;
-            if (@{$state->{lead_buffer}} > $plan->{lead}) {
-              shift @{$state->{lead_buffer}};
-            }
-          }
           $stats->{lines_skipped}++;
         }
       }
+
+      $state->{printing} =
+        $was_printing ? !$end_match : ($start_match && !$end_match);
+
+      $state->{linger_left}-- if $within_linger;
+      if ($single_match || $active_end) {
+        $state->{linger_left} = $plan->{linger}
+          if $plan->{linger} > $state->{linger_left};
+      }
     }
-    close($filehandle) or die("Cannot close '$file': $!\n");
+
+    $stats->{lines_skipped} += @{$state->{lead_buffer}};
+    if (!close($filehandle)) {
+      warn "Cannot close '$file': $!\n";
+      $stats->{errors}++;
+    }
   }
+
+  return $stats;
 }
 
 sub print_line {
@@ -208,6 +201,11 @@ sub parse_arguments {
   }
   while ( @ARGV >= 1 ) {
     if ( $abbrev->{$ARGV[0]} ) {                       # have a valid argument, find which one
+      my $option = $abbrev->{$ARGV[0]};
+      if ($option =~ /^-(?:regexp|find|grep|on|start|begin|off|stop|end|lead|linger|context|file)$/
+          && @ARGV < 2) {
+        usage_error("option '$ARGV[0]' requires a value");
+      }
       if ( $abbrev->{$ARGV[0]} eq '-help' or  $abbrev->{$ARGV[0]} eq '-?' ) {
         help($plan);
         shift(@ARGV);
@@ -235,14 +233,17 @@ sub parse_arguments {
         print "user specified '$ARGV[1]' as regexp to be added to triggers to stop printing\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-lead' ) {
+        validate_nonnegative_integer('-lead', $ARGV[1]);
         $plan->{lead} = $ARGV[1];
         print "user specified '$ARGV[1]' as number of lines to print before each trigger regexp\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-linger' ) {
+        validate_nonnegative_integer('-linger', $ARGV[1]);
         $plan->{linger} = $ARGV[1];
         print "user specified '$ARGV[1]' as number of lines to print after each terminate regexp\n" if ($plan->{debug});
         shift(@ARGV); shift(@ARGV);
       } elsif ( $abbrev->{$ARGV[0]} eq '-context' ) {
+        validate_nonnegative_integer('-context', $ARGV[1]);
         $plan->{lead}   = $ARGV[1];
         $plan->{linger} = $ARGV[1];
         print "user specified '$ARGV[1]' as number of lines to print before each trigger regexp\n" if ($plan->{debug});
@@ -257,21 +258,26 @@ sub parse_arguments {
         exit;
       }
     } elsif ( $ARGV[0] =~ m'^-?(\d+)\.\.+(\d+)$' ) {                                    # N to M
+      usage_error('line numbers must be greater than zero') if $1 == 0 || $2 == 0;
+      usage_error("range start $1 is greater than range end $2") if $1 > $2;
       $plan->{start_lines}{$1}++;
       $plan->{stop_lines}{$2}++;
       print "user has requested printing of lines $1 to $2 inclusive\n" if ($plan->{debug});
       shift(@ARGV);
     } elsif ( $ARGV[0] =~ m'^-?(\d+)\.\.$' ) {                                          # N on
+      usage_error('line numbers must be greater than zero') if $1 == 0;
       $plan->{start_lines}{$1}++;
       print "user has requested printing of lines starting at $1\n" if ($plan->{debug});
       shift(@ARGV);
     } elsif ( $ARGV[0] =~ m'^-?\.\.(\d+)$' ) {                                          #   to M
+      usage_error('line numbers must be greater than zero') if $1 == 0;
       $plan->{start_printing} = 1;
       $plan->{stop_lines}{$1}++;
       push( @{$plan->{ranges}}, { start=>undef, end=>$1 } );
       print "user has requested printing of lines up to $1\n" if ($plan->{debug});
       shift(@ARGV);
     } elsif ( $ARGV[0] =~ m'^-?(\d+)$' ) {                                              # just print line N
+      usage_error('line numbers must be greater than zero') if $1 == 0;
       $plan->{start_lines}{$1}++;
       $plan->{stop_lines}{$1}++;
       print "user has requested printing of line $1\n" if ($plan->{debug});
@@ -280,7 +286,7 @@ sub parse_arguments {
       my $front=$1;
       my $back=$2;
       if ($front eq '' and $back eq '') {
-        print "'..' is not a valid option.\n";
+        usage_error("'..' is not a valid range");
       } elsif ($front eq '') { # ..SOMETHING (not a number)
         print " ..X '$front' '$back'\n" if ($plan->{debug});
         $plan->{start_printing} = 1;
@@ -307,21 +313,23 @@ sub parse_arguments {
       }
       shift(@ARGV);
     } else {
+      usage_error("unknown option '$ARGV[0]'")
+        if $ARGV[0] =~ /^-/ && $ARGV[0] ne '-';
       warn("$plan->{name}: Unknown option '$ARGV[0]'; assuming file to scan...\n") if ($plan->{debug});
       push(@{$plan->{files}},shift(@ARGV));
     }
 
     if (@start_regexps) {
       my $regexps_ored = join('|', @start_regexps);
-      $plan->{start_regexp} = qr/$regexps_ored/;
+      $plan->{start_regexp} = compile_regexp('start', $regexps_ored);
     }
     if (@stop_regexps) {
       my $regexps_ored = join('|', @stop_regexps);
-      $plan->{stop_regexp} = qr/$regexps_ored/;
+      $plan->{stop_regexp} = compile_regexp('end', $regexps_ored);
     }
     if (@regexps) {
       my $regexps_ored = join('|', @regexps);
-      $plan->{regexp} = qr/$regexps_ored/;
+      $plan->{regexp} = compile_regexp('match', $regexps_ored);
     }
   }  # end while
   if ($plan->{debug}) {
@@ -330,6 +338,36 @@ sub parse_arguments {
   }
   # if (@$ranges) { @$plan->{ranges} = sort { ( $plan->{ranges}->[$a]{start} <=> $plan->{ranges}->[$b]{start} ) || ( $plan->{ranges}->[$a]{end} <=> $plan->{ranges}->[$b]{end} ) } @$ranges }
 }  # end parse_args
+
+sub validate_plan {
+  my $plan = shift;
+  validate_nonnegative_integer('-lead', $plan->{lead});
+  validate_nonnegative_integer('-linger', $plan->{linger});
+}
+
+sub validate_nonnegative_integer {
+  my ($option, $value) = @_;
+  usage_error("$option requires a non-negative integer")
+    unless defined $value && $value =~ /^\d+$/;
+}
+
+sub compile_regexp {
+  my ($kind, $source) = @_;
+  my $regexp = eval { qr/$source/ };
+  if (!$regexp || $@) {
+    my $error = $@ || 'unknown regular-expression error';
+    $error =~ s/\s+at\s+\Q$0\E\s+line\s+\d+.*//s;
+    chomp $error;
+    usage_error("invalid $kind regular expression '$source': $error");
+  }
+  return $regexp;
+}
+
+sub usage_error {
+  my $message = shift;
+  warn "onoff: $message\n";
+  exit 2;
+}
 
 sub help {
   my ($plan,@args) = @_;

@@ -5,6 +5,7 @@ use warnings;
 
 use Test::More;
 use File::Spec;
+use File::Temp qw(tempdir);
 use FindBin qw($Bin);
 use IPC::Open3;
 use Symbol qw(gensym);
@@ -108,5 +109,84 @@ is($status, 0, 'usage option succeeds');
 ($stdout, $stderr, $status) = run_onoff(undef, '-help');
 like($stdout, qr/-start\s+regexp to trigger printing/, 'help describes options');
 is($status, 0, 'help option succeeds');
+
+($stdout, $stderr, $status) = run_onoff(
+  "zero\nbefore\nmatch\nafter\n", '-regexp', '^match$', '-lead', '1', '-',
+);
+is($stdout, "before\nmatch\n", 'lead prints only the requested preceding line');
+
+($stdout, $stderr, $status) = run_onoff(
+  "match\nafter\nlast\n", '-regexp', '^match$', '-linger', '1', '-',
+);
+is($stdout, "match\nafter\n", 'linger prints only the requested following line');
+
+($stdout, $stderr, $status) = run_onoff(
+  "first\nmatch\nmiddle\nmatch\nlast\n",
+  '-regexp', '^match$', '-context', '1', '-',
+);
+is(
+  $stdout,
+  "first\nmatch\nmiddle\nmatch\nlast\n",
+  'overlapping context is merged without duplicates or missed triggers',
+);
+
+my $temporary_directory = tempdir(CLEANUP => 1);
+my $first_file = File::Spec->catfile($temporary_directory, 'first.txt');
+my $second_file = File::Spec->catfile($temporary_directory, 'second.txt');
+for my $file_and_text (
+  [$first_file,  "first one\nfirst two\n"],
+  [$second_file, "second one\nsecond two\n"],
+) {
+  open my $filehandle, '>', $file_and_text->[0] or die $!;
+  print {$filehandle} $file_and_text->[1];
+  close $filehandle or die $!;
+}
+
+($stdout, $stderr, $status) = run_onoff(
+  undef, '2', $first_file, $second_file,
+);
+is($stdout, "first two\nsecond two\n", 'processes each input file independently');
+
+($stdout, $stderr, $status) = run_onoff(
+  "outside\nBEGIN\ninside\n", '-start', '^BEGIN$',
+);
+is($stdout, "BEGIN\ninside\n", 'reads standard input when no file is supplied');
+is($status, 0, 'default standard-input selection succeeds');
+
+($stdout, $stderr, $status) = run_onoff(
+  "nothing here\n", '-regexp', '^missing$',
+);
+is($stdout, '', 'a run with no matches has no output');
+is($status, 1, 'a run with no matches exits with status 1');
+
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN\ninside\n", '-start', '^BEGIN$', '-stop', '^END$',
+);
+is($stdout, "BEGIN\ninside\n", 'an unterminated range prints through end of file');
+is($status, 0, 'an unterminated range with output succeeds');
+
+($stdout, $stderr, $status) = run_onoff(
+  "MARK\noutside\n", '-start', '^MARK$', '-stop', '^MARK$',
+);
+is($stdout, "MARK\n", 'a line matching both boundaries is printed once');
+
+($stdout, $stderr, $status) = run_onoff(
+  undef, '1', File::Spec->catfile($temporary_directory, 'missing.txt'),
+);
+is($status, 2, 'an unreadable input file exits with status 2');
+like($stderr, qr/Cannot read/, 'an unreadable input file reports its error');
+
+for my $invalid_case (
+  [['-start'],                  'missing start expression'],
+  [['-context', '-1', '-'],     'negative context'],
+  [['0', $sample],              'line number zero'],
+  [['9..3', $sample],           'reversed numeric range'],
+  [['-regexp', '(', '-'],       'invalid regular expression'],
+  [['-not-an-option'],          'unknown option'],
+) {
+  ($stdout, $stderr, $status) = run_onoff('', @{$invalid_case->[0]});
+  is($status, 2, "$invalid_case->[1] exits with status 2");
+  like($stderr, qr/^onoff:/, "$invalid_case->[1] reports a usage error");
+}
 
 done_testing();

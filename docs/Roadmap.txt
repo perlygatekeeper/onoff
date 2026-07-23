@@ -25,6 +25,8 @@ Guiding principles
 Phase 1: Establish a reliable baseline
 --------------------------------------
 
+Status: complete.
+
 * Replace the inherited placeholder test with tests of current onoff behavior.
 * Test numeric selections: N, N.., ..M, and N..M.
 * Test regular-expression starts, stops, and individual matches.

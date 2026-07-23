@@ -30,7 +30,8 @@ Alternatively, run it directly from this directory:
 onoff [options] [range] [file ...]
 ```
 
-Use `-` as a filename to read standard input.
+When no files are supplied, `onoff` reads standard input. Use `-` explicitly
+when standard input must appear at a particular position among other files.
 
 ### Ranges
 
@@ -131,6 +132,14 @@ onoff 1..10 first.txt second.txt
 - Files are processed independently and output is written to standard output.
 - Diagnostics and file-opening errors are written to standard error.
 
+### Exit status
+
+```text
+0    processing completed and at least one line was selected
+1    processing completed but no lines were selected
+2    invalid arguments or an input/output error
+```
+
 ## Current limitations
 
 - Use single-hyphen options such as `-help`; GNU-style `--help` is not
@@ -141,12 +150,6 @@ onoff 1..10 first.txt second.txt
   use one expression of each kind and combine alternatives with `|`.
 - Option values are not fully validated. Always provide an argument after
   `-start`, `-stop`, `-regexp`, `-lead`, `-linger`, `-context`, and `-file`.
-- Context can overlap or duplicate output in some edge cases, and numbered
-  lingering output may report an incorrect line number.
-- While lingering after a stop, new start triggers are not examined.
-- With no input files, the program produces no useful output. Specify files or
-  use `-` explicitly for standard input.
-- The test suite is unfinished.
 
 ## Project commands
 
