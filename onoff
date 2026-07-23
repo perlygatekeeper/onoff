@@ -18,9 +18,10 @@ my $copyright="$last_mod_date. All rights reserved.";
 my $name = $0; $name =~ s'.*/''; # remove path--like basename
 my $usage  = "usage:\n$name\n\t";
 $usage .= "[ ( -?      | --help  | --debug | --usage ) ]\n\t";
-$usage .= "[ ( --on    | --begin | --start ) start_regexp ]\n\t";
-$usage .= "[ ( --off   | --end   | --stop  ) stop_regexp ]\n\t";
+$usage .= "[ ( --on | --begin | --start | --start-after ) start_regexp ]\n\t";
+$usage .= "[ ( --off | --end | --stop | --end-before ) stop_regexp ]\n\t";
 $usage .= "[ ( --regexp | --find | --grep ) regexp ]\n\t";
+$usage .= "[ --exclude-start ] [ --exclude-end ]\n\t";
 $usage .= "[ --fixed ] [ --ignore-case ] [ --list-ranges ]\n\t";
 $usage .= "[ --lead N --linger M | --context N ]\n\t";
 $usage .= "[  N..M     |  N..   |  ..M  |  N  ]\n\t";
@@ -36,7 +37,11 @@ print Dumper($plan) if ($plan->{debug});
 my $stats = execute_plan($plan);
 
 exit 2 if $stats->{errors};
-exit($stats->{lines_selected} ? 0 : 1);
+exit(
+  $plan->{list_ranges}
+    ? (@{$stats->{ranges}} ? 0 : 1)
+    : ($stats->{lines_selected} ? 0 : 1)
+);
 
 sub initialize_plan {
   return {
@@ -46,13 +51,17 @@ sub initialize_plan {
     files          => [],
     fixed           => 0,
     ignore_case     => 0,
+    include_end     => 1,
+    include_start   => 1,
     lead           => 0,
     linger         => 0,
     list_ranges    => 0,
     match_patterns => [],
     print_stops    => 1,
     ranges         => [],
+    end_pattern_policies   => {},
     start_patterns => [],
+    start_pattern_policies => {},
     start_lines    => {},
     start_printing => 0,
     stop_lines     => {},
@@ -75,7 +84,9 @@ sub execute_plan {
 
   foreach my $file (@{$plan->{files}}) {
     my $state = {
-      active_range_start => $plan->{start_printing} ? 1 : undef,
+      active_range_start => $plan->{start_printing}
+        ? ($plan->{include_start} ? 1 : 2)
+        : undef,
       active_rule        => undef,
       filename           => $file,
       lead_buffer        => [],
@@ -114,12 +125,37 @@ sub execute_plan {
       my $single_match = $plan->{regexp} && $line =~ $plan->{regexp};
       my $active_end = ($was_printing || $start_match) && $end_match;
       my $within_linger = $state->{linger_left} > 0;
+      my $implicit_start_event =
+        $plan->{start_printing} && $state->{line_number} == 1;
+      my $start_event =
+        (!$was_printing && $start_match) || $implicit_start_event;
+      my $start_boundary_excluded =
+        $start_event && !$plan->{include_start};
+      my $end_boundary_excluded =
+        $active_end && !$plan->{include_end};
+      my $boundary_included =
+        ($start_event && $plan->{include_start})
+        || ($active_end && $plan->{include_end});
+      my $range_interior =
+        $was_printing
+        && !$start_boundary_excluded
+        && !$end_boundary_excluded;
+      my $context_selected =
+        $within_linger
+        && !$start_boundary_excluded
+        && !$end_boundary_excluded;
+      my $line_selected =
+        $range_interior
+        || $boundary_included
+        || $single_match
+        || $context_selected;
 
       $stats->{starts_matched}++ if $start_match;
       $stats->{ends_matched}++ if $active_end;
 
-      if ($start_match && !$was_printing) {
-        $state->{active_range_start} = $state->{line_number};
+      if ($start_event && !$implicit_start_event) {
+        $state->{active_range_start} =
+          $state->{line_number} + ($plan->{include_start} ? 0 : 1);
       }
 
       if ($single_match && !$plan->{has_range_conditions}) {
@@ -131,7 +167,7 @@ sub execute_plan {
         );
       }
 
-      if ($start_match || $single_match) {
+      if ($start_event || $single_match) {
         while (@{$state->{lead_buffer}}) {
           my $buffered = shift @{$state->{lead_buffer}};
           print_line(
@@ -144,10 +180,12 @@ sub execute_plan {
         }
       }
 
-      if ($was_printing || $start_match || $single_match || $within_linger) {
+      if ($line_selected) {
         print_line($plan, $state, $stats, $line);
       } else {
-        if ($plan->{lead}) {
+        if ($start_boundary_excluded || $end_boundary_excluded) {
+          $stats->{lines_skipped}++;
+        } elsif ($plan->{lead}) {
           push @{$state->{lead_buffer}}, {
             number => $state->{line_number},
             text   => $line,
@@ -165,11 +203,22 @@ sub execute_plan {
         $was_printing ? !$end_match : ($start_match && !$end_match);
 
       if ($active_end) {
+        my ($selected_start, $selected_end);
+        if ($start_event) {
+          if ($plan->{include_start} || $plan->{include_end}) {
+            $selected_start = $state->{line_number};
+            $selected_end = $state->{line_number};
+          }
+        } else {
+          $selected_start = $state->{active_range_start};
+          $selected_end =
+            $state->{line_number} - ($plan->{include_end} ? 0 : 1);
+        }
         record_range(
           $stats,
           $file,
-          $state->{active_range_start},
-          $state->{line_number},
+          $selected_start,
+          $selected_end,
         );
         $state->{active_range_start} = undef;
       }
@@ -181,7 +230,9 @@ sub execute_plan {
       }
     }
 
-    if ($state->{printing} && $state->{line_number}) {
+    if ($state->{printing}
+        && $state->{line_number}
+        && $state->{active_range_start} <= $state->{line_number}) {
       record_range(
         $stats,
         $file,
@@ -220,6 +271,7 @@ sub print_line {
 sub record_range {
   my ($stats, $file, $start, $end) = @_;
   return unless defined $start;
+  return if $end ne 'EOF' && $start > $end;
   push @{$stats->{ranges}}, {
     end   => $end,
     file  => $file,
@@ -232,15 +284,27 @@ sub parse_arguments {
   my @options = qw(
     ? help debug usage
     regexp find grep
-    on start begin off stop end
+    on start begin start-after
+    off stop end end-before
     number lead linger context file
+    exclude-start exclude-end
     fixed ignore-case list-ranges
   );
   @options = map { "-$_" } @options;
   my $abbrev = abbrev @options;
+  my @legacy_options = map { "-$_" } qw(
+    ? help debug usage
+    regexp find grep
+    on start begin off stop end
+    number lead linger context file
+    fixed ignore-case list-ranges
+  );
+  my $legacy_abbrev = abbrev @legacy_options;
+  $abbrev->{$_} = $legacy_abbrev->{$_} for keys %{$legacy_abbrev};
   my %takes_value = map { $_ => 1 } qw(
     -regexp -find -grep
-    -on -start -begin -off -stop -end
+    -on -start -begin -start-after
+    -off -stop -end -end-before
     -lead -linger -context -file
   );
 
@@ -248,8 +312,12 @@ sub parse_arguments {
     { arg => '--help, -help, -?', explanation => 'print detailed help' },
     { arg => '--usage, -usage', explanation => 'print a short usage summary' },
     { arg => '--start, -start', explanation => 'regexp to trigger printing' },
+    { arg => '--start-after', explanation => 'start after an excluded matching line' },
     { arg => '--end, -end', explanation => 'regexp to terminate printing' },
+    { arg => '--end-before', explanation => 'stop before an excluded matching line' },
     { arg => '--regexp, -regexp', explanation => 'regexp selecting individual lines' },
+    { arg => '--exclude-start', explanation => 'exclude the starting boundary' },
+    { arg => '--exclude-end', explanation => 'exclude the ending boundary' },
     { arg => '--fixed', explanation => 'treat expressions as literal strings' },
     { arg => '--ignore-case', explanation => 'match without regard to letter case' },
     { arg => '--lead N', explanation => 'print N lines before a trigger' },
@@ -293,14 +361,28 @@ sub parse_arguments {
         $plan->{fixed} = 1;
       } elsif ($option eq '-ignore-case') {
         $plan->{ignore_case} = 1;
+      } elsif ($option eq '-exclude-start') {
+        $plan->{include_start} = 0;
+      } elsif ($option eq '-exclude-end') {
+        $plan->{include_end} = 0;
       } elsif ($option eq '-list-ranges') {
         $plan->{list_ranges} = 1;
       } elsif ($option =~ /^-(?:regexp|find|grep)$/) {
         push @{$plan->{match_patterns}}, $value;
       } elsif ($option =~ /^-(?:on|start|begin)$/) {
         push @{$plan->{start_patterns}}, $value;
+        $plan->{start_pattern_policies}{inclusive} = 1;
+      } elsif ($option eq '-start-after') {
+        push @{$plan->{start_patterns}}, $value;
+        $plan->{start_pattern_policies}{exclusive} = 1;
+        $plan->{include_start} = 0;
       } elsif ($option =~ /^-(?:off|stop|end)$/) {
         push @{$plan->{end_patterns}}, $value;
+        $plan->{end_pattern_policies}{inclusive} = 1;
+      } elsif ($option eq '-end-before') {
+        push @{$plan->{end_patterns}}, $value;
+        $plan->{end_pattern_policies}{exclusive} = 1;
+        $plan->{include_end} = 0;
       } elsif ($option eq '-lead') {
         validate_nonnegative_integer('--lead', $value);
         $plan->{lead} = $value;
@@ -393,6 +475,11 @@ sub validate_plan {
   usage_error("standard input '-' may only be specified once")
     if $standard_inputs > 1;
 
+  usage_error('mixed start boundary policies require paired rules')
+    if keys %{$plan->{start_pattern_policies}} > 1;
+  usage_error('mixed end boundary policies require paired rules')
+    if keys %{$plan->{end_pattern_policies}} > 1;
+
   $plan->{has_range_conditions} =
     $plan->{start_printing}
     || keys %{$plan->{start_lines}}
@@ -475,6 +562,7 @@ sub report_plan {
   print "\nstops\n";
   print "set stop   to '$plan->{stop_regexp}'\n" if ($plan->{stop_regexp});
   print "set stops  at: " . join(', ', keys %{$plan->{stop_lines}}) . "\n" if ($plan->{stop_lines});
+  print "include start/end: $plan->{include_start}, $plan->{include_end}\n";
   print "\nfiles?\n";
   print "$_\n" foreach (@{$plan->{files}});
   print "lead, linger: $plan->{lead}, $plan->{linger}\n";

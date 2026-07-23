@@ -49,8 +49,14 @@ Range boundaries are included in the output.
 
 ```text
 --start REGEXP      start printing at a matching line
+--start-after REGEXP
+                    start after an excluded matching line
 --end REGEXP        stop printing after a matching line
+--end-before REGEXP
+                    stop before an excluded matching line
 --regexp REGEXP     print individual matching lines
+--exclude-start     exclude the starting boundary
+--exclude-end       exclude the ending boundary
 --fixed             treat expressions as literal strings
 --ignore-case       match without regard to letter case
 --lead N            include N lines before a trigger
@@ -152,13 +158,33 @@ file.txt    12    28
 file.txt    61    EOF
 ```
 
+Print only the content between marker lines:
+
+```sh
+onoff \
+  --start-after '^BEGIN$' \
+  --end-before '^END$' \
+  file.txt
+```
+
+The general boundary modifiers also apply to numeric and compact ranges:
+
+```sh
+onoff --exclude-start --exclude-end 4..10 file.txt
+onoff --exclude-start --exclude-end 'BEGIN..END' file.txt
+```
+
 ## Behavior
 
 - Start and stop lines are printed inclusively.
+- `--start-after` and `--exclude-start` exclude a starting boundary.
+- `--end-before` and `--exclude-end` exclude an ending boundary.
+- A boundary match changes range state whether or not its line is included.
 - After a stop, scanning continues, so later start/stop sections may also be
   printed.
 - A line matching both the start and stop condition is printed once and does
-  not leave printing enabled.
+  not leave printing enabled. It is omitted only when both boundary roles are
+  excluded.
 - `--regexp` selects individual matching lines rather than an entire section.
 - `--lead`, `--linger`, and `--context` add nearby lines around triggers.
 - Repeated start, end, and individual expressions are combined as alternatives.
@@ -178,7 +204,8 @@ file.txt    61    EOF
 
 - Paired trigger sets are planned but not implemented. All configured starts
   and stops share one printing state.
-- Boundary lines are always included.
+- Boundary inclusion policy is global. Mixing `--start` with `--start-after`,
+  or `--end` with `--end-before`, requires paired rules and is rejected.
 - `--fixed` and `--ignore-case` apply to every expression in the command.
 - Standard input may only appear once.
 

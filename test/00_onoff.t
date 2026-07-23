@@ -342,4 +342,175 @@ is($stdout, "<stdin>\t2\t2\n", 'list-ranges reports individual matches');
 is($stdout, '', 'list-ranges prints nothing when no range matched');
 is($status, 1, 'list-ranges returns status 1 when no range matched');
 
+my $boundary_input = <<'TEXT';
+outside
+BEGIN
+inside
+END
+outside again
+TEXT
+
+for my $boundary_case (
+  [
+    ['--start', '^BEGIN$', '--end', '^END$'],
+    "BEGIN\ninside\nEND\n",
+    'inclusive start and inclusive end',
+  ],
+  [
+    ['--start-after', '^BEGIN$', '--end', '^END$'],
+    "inside\nEND\n",
+    'exclusive start and inclusive end',
+  ],
+  [
+    ['--start', '^BEGIN$', '--end-before', '^END$'],
+    "BEGIN\ninside\n",
+    'inclusive start and exclusive end',
+  ],
+  [
+    ['--start-after', '^BEGIN$', '--end-before', '^END$'],
+    "inside\n",
+    'exclusive start and exclusive end',
+  ],
+) {
+  ($stdout, $stderr, $status) = run_onoff(
+    $boundary_input,
+    @{$boundary_case->[0]},
+  );
+  is($stdout, $boundary_case->[1], $boundary_case->[2]);
+  is($status, 0, "$boundary_case->[2] succeeds");
+}
+
+($stdout, $stderr, $status) = run_onoff(
+  undef, '--exclude-start', '--exclude-end', '4..7', $sample,
+);
+is(
+  $stdout,
+  "     5\tFive\n     6\tSix\n",
+  'boundary modifiers apply to numeric ranges',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  $boundary_input,
+  '--exclude-start', '--exclude-end', 'BEGIN..END',
+);
+is($stdout, "inside\n", 'boundary modifiers apply to compact regexp ranges');
+
+($stdout, $stderr, $status) = run_onoff(
+  "one\ntwo\nthree\n", '--exclude-end', '..3',
+);
+is($stdout, "one\ntwo\n", 'exclude-end applies to a range from file start');
+
+($stdout, $stderr, $status) = run_onoff(
+  "one\ntwo\nthree\n", '--exclude-start', '1..',
+);
+is($stdout, "two\nthree\n", 'exclude-start applies to a range through EOF');
+
+for my $same_line_case (
+  [
+    ['--start', '^MARK$', '--end', '^MARK$'],
+    "MARK\n",
+    'same line with both boundaries included',
+  ],
+  [
+    ['--start-after', '^MARK$', '--end', '^MARK$'],
+    "MARK\n",
+    'same line with only end included',
+  ],
+  [
+    ['--start', '^MARK$', '--end-before', '^MARK$'],
+    "MARK\n",
+    'same line with only start included',
+  ],
+  [
+    ['--start-after', '^MARK$', '--end-before', '^MARK$'],
+    '',
+    'same line with both boundaries excluded',
+  ],
+) {
+  ($stdout, $stderr, $status) = run_onoff(
+    "MARK\noutside\n",
+    @{$same_line_case->[0]},
+  );
+  is($stdout, $same_line_case->[1], $same_line_case->[2]);
+}
+
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN\nEND\n",
+  '--start-after', '^BEGIN$', '--end-before', '^END$',
+);
+is($stdout, '', 'adjacent excluded boundaries produce no output');
+is($status, 1, 'an empty exclusive range returns status 1');
+
+($stdout, $stderr, $status) = run_onoff(
+  "outside\nBEGIN\ninside\n",
+  '--start-after', '^BEGIN$', '--end-before', '^END$',
+);
+is($stdout, "inside\n", 'an unterminated range honors excluded start');
+
+($stdout, $stderr, $status) = run_onoff(
+  "before\nBEGIN\ninside\nEND\nafter\n",
+  '--start-after', '^BEGIN$', '--end-before', '^END$',
+  '--lead', '1', '--linger', '1',
+);
+is(
+  $stdout,
+  "before\ninside\nafter\n",
+  'context does not reintroduce excluded boundary markers',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  $boundary_input,
+  '--start-after', '^BEGIN$', '--end-before', '^END$',
+  '--regexp', '^BEGIN$',
+);
+is(
+  $stdout,
+  "BEGIN\ninside\n",
+  'an individual match can independently select an excluded boundary',
+);
+
+for my $mixed_policy_case (
+  [
+    ['--start', '^BEGIN$', '--start-after', '^OPEN$'],
+    'mixed start boundary policies',
+  ],
+  [
+    ['--end', '^END$', '--end-before', '^CLOSE$'],
+    'mixed end boundary policies',
+  ],
+) {
+  ($stdout, $stderr, $status) = run_onoff(
+    '', @{$mixed_policy_case->[0]},
+  );
+  is($status, 2, "$mixed_policy_case->[1] are rejected");
+  like($stderr, qr/mixed .* boundary policies/, 'mixed-policy error is clear');
+}
+
+($stdout, $stderr, $status) = run_onoff(
+  $boundary_input,
+  '--start-after', '^BEGIN$', '--end-before', '^END$', '--list-ranges',
+);
+is(
+  $stdout,
+  "<stdin>\t3\t3\n",
+  'list-ranges reports selected boundaries after exclusion',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN\nEND\n",
+  '--start-after', '^BEGIN$', '--end-before', '^END$', '--list-ranges',
+);
+is($stdout, '', 'list-ranges omits an empty exclusive range');
+is($status, 1, 'an empty listed range returns status 1');
+
+($stdout, $stderr, $status) = run_onoff(
+  "outside\nBEGIN\ninside\n",
+  '--start-after', '^BEGIN$', '--end-before', '^END$', '--list-ranges',
+);
+is(
+  $stdout,
+  "<stdin>\t3\tEOF\n",
+  'list-ranges reports an unterminated exclusive-start range',
+);
+
 done_testing();
