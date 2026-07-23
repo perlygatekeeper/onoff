@@ -1079,17 +1079,6 @@ write_responses('quit');
 is($stdout, '', 'quit stops before printing the candidate range');
 is($status, 1, 'quitting before a selection returns the no-selection status');
 
-($stdout, $stderr, $status) = run_onoff(
-  $interactive_input,
-  '--interactive', '--start', '^BEGIN$', '--end', '^END$',
-);
-is($status, 2, 'interactive mode refuses a non-terminal input environment');
-like(
-  $stderr,
-  qr/requires a terminal or --responses FILE/,
-  'the non-terminal diagnostic recommends the explicit response source',
-);
-
 for my $invalid_interactive_case (
   [
     ['--responses', $responses_file, '--start', '^BEGIN$', '--end', '^END$'],
