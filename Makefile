@@ -35,6 +35,7 @@ status:
 	git status --short
 
 clean:
+	rm -rf examples-output
 	find . -name '*~' -delete
 	find . -name '*.bak' -delete
 	find . -name '.DS_Store' -delete

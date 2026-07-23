@@ -32,6 +32,15 @@ sub run_onoff {
   return ($stdout, $stderr, $? >> 8);
 }
 
+sub read_text_file {
+  my $filename = shift;
+  open my $filehandle, '<', $filename or die "Cannot read '$filename': $!";
+  local $/;
+  my $text = <$filehandle> // '';
+  close $filehandle or die "Cannot close '$filename': $!";
+  return $text;
+}
+
 my ($stdout, $stderr, $status) = run_onoff(undef, '13', $sample);
 is($stdout, "    13\tThirteen\n", 'prints one numbered input line');
 is($stderr, '', 'one-line selection has no diagnostics');
@@ -679,5 +688,319 @@ for my $invalid_rule_case (
   is($status, 2, "$invalid_rule_case->[2] is rejected");
   like($stderr, $invalid_rule_case->[1], "$invalid_rule_case->[2] is explained");
 }
+
+my $routing_root = File::Spec->catdir($temporary_directory, 'routing');
+mkdir $routing_root or die "Cannot create '$routing_root': $!";
+
+my $static_dir = File::Spec->catdir($routing_root, 'static');
+mkdir $static_dir or die "Cannot create '$static_dir': $!";
+($stdout, $stderr, $status) = run_onoff(
+  $paired_input,
+  '--output-dir', $static_dir,
+  '--rule', 'alpha', '--start', '^BEGIN A$', '--end', '^END A$',
+    '--output', 'alpha.txt',
+  '--rule', 'beta', '--start-after', '^BEGIN B$', '--end-before', '^END B$',
+    '--output', 'beta.txt',
+);
+is($stdout, '', 'routed paired rules do not also print to standard output');
+is($status, 0, 'static paired output routing succeeds');
+is(
+  read_text_file(File::Spec->catfile($static_dir, 'alpha.txt')),
+  "BEGIN A\na one\nEND B\na two\nEND A\n",
+  'the alpha rule is written to its static output',
+);
+is(
+  read_text_file(File::Spec->catfile($static_dir, 'beta.txt')),
+  "b one\nEND A\nb two\n",
+  'the beta rule uses its own output and boundary policy',
+);
+
+my $aggregate_dir = File::Spec->catdir($routing_root, 'aggregate');
+mkdir $aggregate_dir or die "Cannot create '$aggregate_dir': $!";
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN\none\nEND\noutside\nBEGIN\ntwo\nEND\n",
+  '--output-dir', $aggregate_dir,
+  '--rule', 'sections', '--start-after', '^BEGIN$', '--end-before', '^END$',
+  '--output', 'sections.txt',
+);
+is(
+  read_text_file(File::Spec->catfile($aggregate_dir, 'sections.txt')),
+  "one\ntwo\n",
+  'repeated matches for a static output are aggregated',
+);
+
+my $shared_dir = File::Spec->catdir($routing_root, 'shared');
+mkdir $shared_dir or die "Cannot create '$shared_dir': $!";
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN A\na\nEND A\nBEGIN B\nb\nEND B\n",
+  '--output-dir', $shared_dir,
+  '--rule', 'alpha', '--start-after', '^BEGIN A$', '--end-before', '^END A$',
+    '--output', 'shared.txt',
+  '--rule', 'beta', '--start-after', '^BEGIN B$', '--end-before', '^END B$',
+    '--output', 'shared.txt',
+);
+is(
+  read_text_file(File::Spec->catfile($shared_dir, 'shared.txt')),
+  "a\nb\n",
+  'multiple rules may intentionally share one static output',
+);
+
+my $capture_dir = File::Spec->catdir($routing_root, 'captures');
+mkdir $capture_dir or die "Cannot create '$capture_dir': $!";
+my $capture_input = <<'TEXT';
+BEGIN alpha
+one
+END
+BEGIN beta
+two
+END
+TEXT
+
+($stdout, $stderr, $status) = run_onoff(
+  $capture_input,
+  '--output-dir', $capture_dir,
+  '--rule', 'named',
+  '--start-after', '^BEGIN (?<name>\S+)$', '--end-before', '^END$',
+  '--output-template', '{name}.txt',
+);
+is($status, 0, 'named-capture output templates succeed');
+is(
+  read_text_file(File::Spec->catfile($capture_dir, 'alpha.txt')),
+  "one\n",
+  'a named start capture creates the first filename',
+);
+is(
+  read_text_file(File::Spec->catfile($capture_dir, 'beta.txt')),
+  "two\n",
+  'a named start capture creates the second filename',
+);
+
+my $sequence_dir = File::Spec->catdir($routing_root, 'sequence');
+mkdir $sequence_dir or die "Cannot create '$sequence_dir': $!";
+($stdout, $stderr, $status) = run_onoff(
+  $capture_input,
+  '--output-dir', $sequence_dir,
+  '--rule', 'parts', '--start-after', '^BEGIN (\S+)$', '--end-before', '^END$',
+  '--output-template', '{rule}_{number:02}_{1}.txt',
+);
+is(
+  read_text_file(File::Spec->catfile($sequence_dir, 'parts_01_alpha.txt')),
+  "one\n",
+  'sequential, rule, and numbered-capture fields expand together',
+);
+is(
+  read_text_file(File::Spec->catfile($sequence_dir, 'parts_02_beta.txt')),
+  "two\n",
+  'sequential output numbering advances for each range',
+);
+
+my $sanitized_dir = File::Spec->catdir($routing_root, 'sanitized');
+mkdir $sanitized_dir or die "Cannot create '$sanitized_dir': $!";
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN ../../unsafe\ninside\nEND\n",
+  '--output-dir', $sanitized_dir,
+  '--rule', 'safe', '--start-after', '^BEGIN (.+)$', '--end-before', '^END$',
+  '--output-template', '$1.txt',
+);
+is($status, 0, 'captured path separators are sanitized safely');
+opendir my $sanitized_handle, $sanitized_dir or die $!;
+my @sanitized_files = grep { $_ !~ /^\./ } readdir $sanitized_handle;
+closedir $sanitized_handle;
+is(scalar @sanitized_files, 1, 'a sanitized capture creates one confined file');
+is(
+  read_text_file(File::Spec->catfile($sanitized_dir, $sanitized_files[0])),
+  "inside\n",
+  'the sanitized capture output contains the selected range',
+);
+
+my $metadata_dir = File::Spec->catdir($routing_root, 'metadata');
+mkdir $metadata_dir or die "Cannot create '$metadata_dir': $!";
+($stdout, $stderr, $status) = run_onoff(
+  undef,
+  '--output-dir', $metadata_dir,
+  '--rule', 'meta', '--start', '^BEGIN$', '--end', '^END$',
+  '--output-template', '{input_base}_{rule}_{start_line}.txt',
+  $unterminated_file,
+);
+ok(
+  -e File::Spec->catfile(
+    $metadata_dir,
+    'unterminated.txt_meta_1.txt',
+  ),
+  'input basename, rule name, and start line expand in templates',
+);
+
+my $duplicate_error_dir = File::Spec->catdir($routing_root, 'duplicate-error');
+mkdir $duplicate_error_dir or die "Cannot create '$duplicate_error_dir': $!";
+my $duplicate_input = "BEGIN same\none\nEND\nBEGIN same\ntwo\nEND\n";
+($stdout, $stderr, $status) = run_onoff(
+  $duplicate_input,
+  '--output-dir', $duplicate_error_dir,
+  '--rule', 'dupes', '--start-after', '^BEGIN (\S+)$', '--end-before', '^END$',
+  '--output-template', '{1}.txt',
+);
+is($status, 2, 'duplicate generated filenames fail by default');
+like($stderr, qr/duplicate generated output/, 'duplicate output is explained');
+ok(
+  !-e File::Spec->catfile($duplicate_error_dir, 'same.txt'),
+  'atomic output is not finalized after a routing error',
+);
+
+my $duplicate_number_dir = File::Spec->catdir($routing_root, 'duplicate-number');
+mkdir $duplicate_number_dir or die "Cannot create '$duplicate_number_dir': $!";
+($stdout, $stderr, $status) = run_onoff(
+  $duplicate_input,
+  '--output-dir', $duplicate_number_dir,
+  '--on-duplicate', 'number',
+  '--rule', 'dupes', '--start-after', '^BEGIN (\S+)$', '--end-before', '^END$',
+  '--output-template', '{1}.txt',
+);
+is($status, 0, 'numbered duplicate policy succeeds');
+is(
+  read_text_file(File::Spec->catfile($duplicate_number_dir, 'same.txt')),
+  "one\n",
+  'the first duplicate keeps the requested name',
+);
+is(
+  read_text_file(File::Spec->catfile($duplicate_number_dir, 'same_2.txt')),
+  "two\n",
+  'the second duplicate receives a numeric suffix',
+);
+
+my $existing_dir = File::Spec->catdir($routing_root, 'existing');
+mkdir $existing_dir or die "Cannot create '$existing_dir': $!";
+my $existing_file = File::Spec->catfile($existing_dir, 'result.txt');
+open my $existing_handle, '>', $existing_file or die $!;
+print {$existing_handle} "existing\n";
+close $existing_handle or die $!;
+
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN\nnew\nEND\n",
+  '--output-dir', $existing_dir,
+  '--rule', 'result', '--start-after', '^BEGIN$', '--end-before', '^END$',
+  '--output', 'result.txt',
+);
+is($status, 2, 'existing output is refused by default');
+is(read_text_file($existing_file), "existing\n", 'refused output is unchanged');
+
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN\nreplacement\nEND\n",
+  '--output-dir', $existing_dir, '--force',
+  '--rule', 'result', '--start-after', '^BEGIN$', '--end-before', '^END$',
+  '--output', 'result.txt',
+);
+is($status, 0, 'force permits replacement');
+is(read_text_file($existing_file), "replacement\n", 'force replaces output');
+
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN\nappended\nEND\n",
+  '--output-dir', $existing_dir, '--append',
+  '--rule', 'result', '--start-after', '^BEGIN$', '--end-before', '^END$',
+  '--output', 'result.txt',
+);
+is($status, 0, 'append permits existing output');
+is(
+  read_text_file($existing_file),
+  "replacement\nappended\n",
+  'append preserves and extends existing output',
+);
+
+my $otherwise_dir = File::Spec->catdir($routing_root, 'otherwise');
+mkdir $otherwise_dir or die "Cannot create '$otherwise_dir': $!";
+($stdout, $stderr, $status) = run_onoff(
+  "outside one\nBEGIN\ninside\nEND\noutside two\n",
+  '--output-dir', $otherwise_dir,
+  '--otherwise', 'otherwise.txt',
+  '--rule', 'selected', '--start-after', '^BEGIN$', '--end-before', '^END$',
+  '--output', 'selected.txt',
+);
+is(
+  read_text_file(File::Spec->catfile($otherwise_dir, 'selected.txt')),
+  "inside\n",
+  'selected lines are routed to the rule output',
+);
+is(
+  read_text_file(File::Spec->catfile($otherwise_dir, 'otherwise.txt')),
+  "outside one\nBEGIN\nEND\noutside two\n",
+  'otherwise receives every unselected line',
+);
+
+my $mixed_output_dir = File::Spec->catdir($routing_root, 'mixed-output');
+mkdir $mixed_output_dir or die "Cannot create '$mixed_output_dir': $!";
+($stdout, $stderr, $status) = run_onoff(
+  "BEGIN A\na\nEND A\nBEGIN B\nb\nEND B\n",
+  '--output-dir', $mixed_output_dir,
+  '--rule', 'alpha', '--start', '^BEGIN A$', '--end', '^END A$',
+    '--output', 'alpha.txt',
+  '--rule', 'beta', '--start', '^BEGIN B$', '--end', '^END B$',
+);
+is(
+  $stdout,
+  "BEGIN B\nb\nEND B\n",
+  'a rule without a destination continues to use standard output',
+);
+
+for my $invalid_output_case (
+  [
+    [
+      '--rule', 'x', '--start', '^A$', '--end', '^B$',
+      '--output-template', '{number}.txt',
+    ],
+    qr/requires --output-dir/,
+    'a dynamic template without output-dir',
+  ],
+  [
+    [
+      '--output-dir', $routing_root,
+      '--rule', 'x', '--start', '^A$', '--end', '^B$',
+      '--output', '../escape.txt',
+    ],
+    qr/parent-directory traversal/,
+    'parent traversal in output',
+  ],
+  [
+    [
+      '--output-dir', $routing_root,
+      '--rule', 'x', '--start', '^A$', '--end', '^B$',
+      '--output-template', '{unknown}.txt',
+    ],
+    qr/unknown template field/,
+    'an unknown template field',
+  ],
+  [
+    [
+      '--append', '--force',
+      '--rule', 'x', '--start', '^A$', '--end', '^B$',
+    ],
+    qr/cannot be used together/,
+    'append combined with force',
+  ],
+) {
+  ($stdout, $stderr, $status) = run_onoff(
+    "A\nB\n",
+    @{$invalid_output_case->[0]},
+  );
+  is($status, 2, "$invalid_output_case->[2] is rejected");
+  like($stderr, $invalid_output_case->[1], "$invalid_output_case->[2] is explained");
+}
+
+my $collision_file = File::Spec->catfile($routing_root, 'collision.txt');
+open my $collision_handle, '>', $collision_file or die $!;
+print {$collision_handle} "BEGIN\ninside\nEND\n";
+close $collision_handle or die $!;
+($stdout, $stderr, $status) = run_onoff(
+  undef,
+  '--output-dir', $routing_root,
+  '--rule', 'collision', '--start', '^BEGIN$', '--end', '^END$',
+  '--output', 'collision.txt',
+  $collision_file,
+);
+is($status, 2, 'an input/output path collision is rejected');
+like($stderr, qr/also an input file/, 'the input/output collision is explained');
+is(
+  read_text_file($collision_file),
+  "BEGIN\ninside\nEND\n",
+  'an input file is unchanged after collision rejection',
+);
 
 done_testing();

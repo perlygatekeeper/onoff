@@ -56,6 +56,15 @@ Range boundaries are included in the output.
                     stop before an excluded matching line
 --regexp REGEXP     print individual matching lines
 --rule NAME         begin a named paired range rule
+--output FILE       route a rule's ranges to one file
+--output-template TEMPLATE
+                    derive output filenames from each start match
+--output-dir DIR    confine generated output beneath a directory
+--otherwise FILE    write unselected input to a file
+--append            append to existing output files
+--force             replace existing output files
+--on-duplicate POLICY
+                    error, number, or append
 --exclude-start     exclude the starting boundary
 --exclude-end       exclude the ending boundary
 --fixed             treat expressions as literal strings
@@ -115,6 +124,92 @@ onoff \
 Rule names begin with a letter and contain only letters, numbers, underscores,
 or hyphens. Explicit rules cannot be mixed with implicit numeric, compact, or
 unnamed start/end ranges in one command.
+
+### Output routing
+
+An output placed inside a rule applies to that rule:
+
+```sh
+onoff \
+  --output-dir extracted \
+  --rule errors \
+    --start '^BEGIN ERROR$' \
+    --end '^END ERROR$' \
+    --output errors.txt \
+  --rule reports \
+    --start-after '^BEGIN REPORT$' \
+    --end-before '^END REPORT$' \
+    --output reports.txt \
+  input.txt
+```
+
+Static destinations collect every match for that rule. Multiple rules may
+intentionally name the same static destination. A rule without a destination
+continues to write to standard output.
+
+Dynamic templates create a destination for each matched range:
+
+```sh
+onoff \
+  --output-dir extracted \
+  --rule subs \
+    --start-after '^[^#]*sub\s+(?<name>\S+)' \
+    --end-before '^}$' \
+    --output-template 'sub_{name}.pl' \
+  source.pl
+```
+
+Supported template fields are:
+
+```text
+{1}             numbered start capture
+{name}          named start capture
+{number}        sequential range number
+{number:03}     zero-padded sequential number
+{input}         sanitized input path
+{input_base}    sanitized input basename
+{rule}          rule name
+{start_line}    matching start line number
+```
+
+`$1`, `$2`, and similar fields are accepted as aliases for `{1}`, `{2}`, and
+so on. Single-quote templates containing `$1` to prevent shell expansion.
+
+Dynamic templates require `--output-dir`. Captured values are sanitized as
+filename components, generated paths cannot escape the output directory, and
+input files cannot also be output destinations.
+
+Existing output files are refused by default:
+
+```sh
+onoff ... --force              # replace existing destinations
+onoff ... --append             # append to existing destinations
+```
+
+When two dynamic ranges generate the same name, the default is an error:
+
+```sh
+--on-duplicate error           # default
+--on-duplicate number          # name.txt, name_2.txt, ...
+--on-duplicate append          # combine duplicate ranges
+```
+
+`--otherwise FILE` writes every unselected line—including excluded boundary
+markers—to a separate static destination:
+
+```sh
+onoff \
+  --output-dir split \
+  --otherwise remainder.txt \
+  --rule selected \
+    --start-after '^BEGIN$' \
+    --end-before '^END$' \
+    --output selected.txt \
+  input.txt
+```
+
+Non-append outputs are written through temporary files and finalized only
+after successful processing. Append mode cannot be rolled back after an error.
 
 ## Examples
 
@@ -230,6 +325,10 @@ onoff --exclude-start --exclude-end 'BEGIN..END' file.txt
   inclusion policy.
 - When several inactive rules start on one line, the first declared rule wins.
 - While a rule is active, other starts are ignored until its paired end matches.
+- Rule destinations are opened once and reused for static output.
+- Dynamic destinations are expanded from captures and range metadata.
+- Selected content is written only to its rule destination when one is set.
+- `--otherwise` receives content not selected by a range or match.
 - Files are processed independently and output is written to standard output.
 - Line numbers, printing state, context, and active ranges reset for each file.
 - Diagnostics and file-opening errors are written to standard error.
@@ -250,6 +349,10 @@ onoff --exclude-start --exclude-end 'BEGIN..END' file.txt
   explicit named rule.
 - `--fixed` and `--ignore-case` apply to every expression in the command.
 - Standard input may only appear once.
+- End captures and `{end_line}` are not available in output templates because
+  destinations are opened when ranges start.
+- Configuration files and nested or overlapping output rules are not yet
+  supported.
 
 ## Project commands
 

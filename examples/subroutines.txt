@@ -1,0 +1,8 @@
+outside
+sub alpha
+alpha body
+}
+outside
+sub beta
+beta body
+}

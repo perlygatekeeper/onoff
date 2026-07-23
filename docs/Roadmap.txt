@@ -102,14 +102,17 @@ show that the added complexity is worthwhile.
 Phase 5: Route ranges to output files
 -------------------------------------
 
+Status: complete.
+
 Associate an optional destination with each paired rule. This allows one pass
 over an input stream to separate different kinds of sections.
 
-Possible command form:
+Implemented command form:
 
   onoff \
-    --pair BEGIN_ERROR END_ERROR errors.txt \
-    --pair BEGIN_EVENT END_EVENT events.txt \
+    --output-dir extracted \
+    --rule errors --start BEGIN_ERROR --end END_ERROR --output errors.txt \
+    --rule events --start BEGIN_EVENT --end END_EVENT --output events.txt \
     input.txt
 
 Requirements:
@@ -135,8 +138,8 @@ A configuration file may eventually be preferable for large rule sets:
       include_start: false
       include_end: false
 
-Captured text could eventually produce dynamic output filenames, but only with
-strict path sanitization and an explicit output directory.
+Captured text can produce dynamic output filenames with strict path
+sanitization and an explicit output directory.
 
 Output filename templates
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -187,9 +190,9 @@ Captured values are untrusted input. Filename expansion must:
 * Refuse existing files and duplicate generated names by default.
 * Report original captures and sanitized results in debug output.
 
-Duplicate-name policies may later include error, number, append, and overwrite;
-error should be the default. Directory structure may come from the template,
-but never directly from a captured value.
+Implemented duplicate-name policies are error, number, and append; error is the
+default. Directory structure may come from the template, but never directly
+from a captured value.
 
 When a start matches, processing will save its captures in state, expand and
 validate the template, open the destination, and route the active range there.
