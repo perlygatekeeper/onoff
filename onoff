@@ -919,7 +919,7 @@ sub parse_arguments {
     { arg => '--otherwise FILE', explanation => 'write unselected lines to FILE' },
     { arg => '--append', explanation => 'append to existing output files' },
     { arg => '--force', explanation => 'replace existing output files' },
-    { arg => '--on-duplicate POLICY', explanation => 'error, number, or append' },
+    { arg => '--on-duplicate POLICY', explanation => 'handle duplicate generated filenames: error, number, or append' },
     { arg => '--exclude-start', explanation => 'exclude the starting boundary' },
     { arg => '--exclude-end', explanation => 'exclude the ending boundary' },
     { arg => '--fixed', explanation => 'treat expressions as literal strings' },
@@ -1285,8 +1285,17 @@ sub help {
   my ($plan,@args) = @_;
   select(STDOUT); $|=1; $\=''; 
   if (@{$plan->{explanations}}) {
+    my $width = 0;
+    foreach my $explanation (@{$plan->{explanations}}) {
+      my $length = length($explanation->{arg});
+      $width = $length if $length > $width;
+    }
+    $width += 2;
     foreach my $explanation ( @{$plan->{explanations}} ) {
-      printf "%-16s\t%s\n", $explanation->{arg}, $explanation->{explanation};
+      printf "%-*s%s\n",
+        $width,
+        $explanation->{arg},
+        $explanation->{explanation};
     }
   } else {
     for (my $arg=$[; $arg<=$#args; $arg++) {
