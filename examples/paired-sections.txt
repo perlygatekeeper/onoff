@@ -1,0 +1,12 @@
+outside
+BEGIN ERROR
+error details
+END REPORT
+more error details
+END ERROR
+outside again
+BEGIN REPORT
+report contents
+END ERROR
+more report contents
+END REPORT

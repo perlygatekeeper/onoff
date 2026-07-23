@@ -326,7 +326,7 @@ TEXT
 );
 is(
   $stdout,
-  "<stdin>\t2\t4\n<stdin>\t6\tEOF\n",
+  "<stdin>\t2\t4\tdefault\n<stdin>\t6\tEOF\tdefault\n",
   'list-ranges reports completed and unterminated logical ranges',
 );
 is($status, 0, 'list-ranges succeeds when ranges were found');
@@ -334,7 +334,7 @@ is($status, 0, 'list-ranges succeeds when ranges were found');
 ($stdout, $stderr, $status) = run_onoff(
   "zero\nmatch\ntwo\n", '--regexp', '^match$', '--list-ranges',
 );
-is($stdout, "<stdin>\t2\t2\n", 'list-ranges reports individual matches');
+is($stdout, "<stdin>\t2\t2\tmatch\n", 'list-ranges reports individual matches');
 
 ($stdout, $stderr, $status) = run_onoff(
   "zero\nnothing\ntwo\n", '--regexp', '^match$', '--list-ranges',
@@ -492,7 +492,7 @@ for my $mixed_policy_case (
 );
 is(
   $stdout,
-  "<stdin>\t3\t3\n",
+  "<stdin>\t3\t3\tdefault\n",
   'list-ranges reports selected boundaries after exclusion',
 );
 
@@ -509,8 +509,175 @@ is($status, 1, 'an empty listed range returns status 1');
 );
 is(
   $stdout,
-  "<stdin>\t3\tEOF\n",
+  "<stdin>\t3\tEOF\tdefault\n",
   'list-ranges reports an unterminated exclusive-start range',
 );
+
+my $paired_input = <<'TEXT';
+outside
+BEGIN A
+a one
+END B
+a two
+END A
+outside
+BEGIN B
+b one
+END A
+b two
+END B
+outside
+TEXT
+
+($stdout, $stderr, $status) = run_onoff(
+  $paired_input,
+  '--rule', 'alpha', '--start', '^BEGIN A$', '--end', '^END A$',
+  '--rule', 'beta',  '--start', '^BEGIN B$', '--end', '^END B$',
+);
+is(
+  $stdout,
+  "BEGIN A\na one\nEND B\na two\nEND A\n"
+    . "BEGIN B\nb one\nEND A\nb two\nEND B\n",
+  'each paired start is closed only by its own end',
+);
+
+my $precedence_input = <<'TEXT';
+START
+inside
+GENERAL END
+still inside
+SPECIFIC END
+TEXT
+
+($stdout, $stderr, $status) = run_onoff(
+  $precedence_input,
+  '--rule', 'specific', '--start', '^START$', '--end', '^SPECIFIC END$',
+  '--rule', 'general',  '--start', '^START$', '--end', '^GENERAL END$',
+);
+is(
+  $stdout,
+  "START\ninside\nGENERAL END\nstill inside\nSPECIFIC END\n",
+  'the first declared matching rule wins',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "outside\nBEGIN A\na\nEND A\noutside\nBEGIN B\nb\nEND B\n",
+  '--rule', 'alpha',
+    '--start-after', '^BEGIN A$', '--end-before', '^END A$',
+  '--rule', 'beta',
+    '--start', '^BEGIN B$', '--end', '^END B$',
+);
+is(
+  $stdout,
+  "a\nBEGIN B\nb\nEND B\n",
+  'boundary inclusion belongs to each paired rule',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "OPEN\none\nCLOSE\nBEGIN\ntwo\nEND\n",
+  '--rule', 'sections',
+  '--start', '^OPEN$', '--start', '^BEGIN$',
+  '--end', '^CLOSE$', '--end', '^END$',
+);
+is(
+  $stdout,
+  "OPEN\none\nCLOSE\nBEGIN\ntwo\nEND\n",
+  'a paired rule may have repeated start and end alternatives',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "MARK\noutside\n",
+  '--rule', 'marker', '--start-after', '^MARK$', '--end', '^MARK$',
+);
+is($stdout, "MARK\n", 'same-line paired boundaries use the rule policy once');
+
+($stdout, $stderr, $status) = run_onoff(
+  "outside\nBEGIN\ninside\n",
+  '--rule', 'section', '--start-after', '^BEGIN$', '--end-before', '^END$',
+);
+is($stdout, "inside\n", 'an unterminated paired rule prints through EOF');
+
+($stdout, $stderr, $status) = run_onoff(
+  undef,
+  '--rule', 'section', '--start', '^BEGIN$', '--end', '^END$',
+  $unterminated_file, $following_file,
+);
+is(
+  $stdout,
+  "BEGIN\nfirst file\n",
+  'an active paired rule resets between files',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "IMPORTANT\noutside\nBEGIN\ninside\nEND\nIMPORTANT\n",
+  '--rule', 'section', '--start', '^BEGIN$', '--end', '^END$',
+  '--regexp', '^IMPORTANT$',
+);
+is(
+  $stdout,
+  "IMPORTANT\nBEGIN\ninside\nEND\nIMPORTANT\n",
+  'individual matches remain independent of paired rules',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  $paired_input,
+  '--rule', 'alpha', '--start-after', '^BEGIN A$', '--end-before', '^END A$',
+  '--rule', 'beta', '--start', '^BEGIN B$', '--end', '^END B$',
+  '--list-ranges',
+);
+is(
+  $stdout,
+  "<stdin>\t3\t5\talpha\n<stdin>\t8\t12\tbeta\n",
+  'list-ranges identifies each paired rule',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "outside\n[begin]\ninside\n[end]\n",
+  '--fixed', '--ignore-case',
+  '--rule', 'literal', '--start-after', '[BEGIN]', '--end-before', '[END]',
+);
+is(
+  $stdout,
+  "inside\n",
+  'fixed and ignore-case matching apply within paired rules',
+);
+
+for my $invalid_rule_case (
+  [
+    ['--rule', 'missing_start', '--end', '^END$'],
+    qr/requires at least one start/,
+    'a rule missing its start',
+  ],
+  [
+    ['--rule', 'missing_end', '--start', '^BEGIN$'],
+    qr/requires at least one end/,
+    'a rule missing its end',
+  ],
+  [
+    [
+      '--rule', 'same', '--start', '^A$', '--end', '^B$',
+      '--rule', 'same', '--start', '^C$', '--end', '^D$',
+    ],
+    qr/duplicate rule name/,
+    'duplicate rule names',
+  ],
+  [
+    [
+      '--start', '^LEGACY$', '--end', '^END$',
+      '--rule', 'paired', '--start', '^A$', '--end', '^B$',
+    ],
+    qr/cannot mix explicit rules with implicit ranges/,
+    'mixed implicit and explicit rules',
+  ],
+  [
+    ['--rule', '../unsafe', '--start', '^A$', '--end', '^B$'],
+    qr/invalid rule name/,
+    'an unsafe rule name',
+  ],
+) {
+  ($stdout, $stderr, $status) = run_onoff('', @{$invalid_rule_case->[0]});
+  is($status, 2, "$invalid_rule_case->[2] is rejected");
+  like($stderr, $invalid_rule_case->[1], "$invalid_rule_case->[2] is explained");
+}
 
 done_testing();

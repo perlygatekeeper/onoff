@@ -75,13 +75,17 @@ is never found.
 Phase 4: Paired range rules
 ---------------------------
 
+Status: complete.
+
 Connect each start condition to its own end condition instead of placing all
 starts and ends in shared pools.
 
-Possible command form:
+Implemented command form:
 
-  onoff --pair START END file
-  onoff --pair START_A END_A --pair START_B END_B file
+  onoff \
+    --rule alpha --start START_A --end END_A \
+    --rule beta  --start START_B --end END_B \
+    file
 
 The first version should use a simple state model:
 

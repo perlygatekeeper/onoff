@@ -55,6 +55,7 @@ Range boundaries are included in the output.
 --end-before REGEXP
                     stop before an excluded matching line
 --regexp REGEXP     print individual matching lines
+--rule NAME         begin a named paired range rule
 --exclude-start     exclude the starting boundary
 --exclude-end       exclude the ending boundary
 --fixed             treat expressions as literal strings
@@ -77,6 +78,43 @@ The legacy single-hyphen forms remain supported. The aliases `--on` and
 Regular expressions are Perl regular expressions supplied as plain arguments.
 Do not surround them with `/` characters. Quote expressions containing spaces
 or shell metacharacters. Repeating an expression option adds an alternative.
+
+### Paired rules
+
+Without `--rule`, repeated starts and ends retain the original shared-pool
+behavior. A named rule connects its start expressions exclusively to its own
+end expressions:
+
+```sh
+onoff \
+  --rule errors \
+    --start '^BEGIN ERROR$' \
+    --end '^END ERROR$' \
+  --rule reports \
+    --start-after '^BEGIN REPORT$' \
+    --end-before '^END REPORT$' \
+  input.txt
+```
+
+The first declared rule whose start matches becomes active. While it is active,
+only that rule's end expressions are examined. Other starts are ignored until
+the active range ends. Rules do not nest or overlap.
+
+Repeated start or end expressions within one rule are alternatives:
+
+```sh
+onoff \
+  --rule failures \
+    --start '^ERROR$' \
+    --start '^FATAL$' \
+    --end '^RECOVERED$' \
+    --end '^ABORTED$' \
+  logfile
+```
+
+Rule names begin with a letter and contain only letters, numbers, underscores,
+or hyphens. Explicit rules cannot be mixed with implicit numeric, compact, or
+unnamed start/end ranges in one command.
 
 ## Examples
 
@@ -150,12 +188,12 @@ Report logical range locations without printing their contents:
 onoff --start '^BEGIN$' --end '^END$' --list-ranges file.txt
 ```
 
-The tab-separated report contains the input name, starting line, and ending
-line. An unterminated range uses `EOF` as its end:
+The tab-separated report contains the input name, starting line, ending line,
+and rule name. An unterminated range uses `EOF` as its end:
 
 ```text
-file.txt    12    28
-file.txt    61    EOF
+file.txt    12    28     default
+file.txt    61    EOF    default
 ```
 
 Print only the content between marker lines:
@@ -188,6 +226,10 @@ onoff --exclude-start --exclude-end 'BEGIN..END' file.txt
 - `--regexp` selects individual matching lines rather than an entire section.
 - `--lead`, `--linger`, and `--context` add nearby lines around triggers.
 - Repeated start, end, and individual expressions are combined as alternatives.
+- Named rules pair their own starts and ends and carry their own boundary
+  inclusion policy.
+- When several inactive rules start on one line, the first declared rule wins.
+- While a rule is active, other starts are ignored until its paired end matches.
 - Files are processed independently and output is written to standard output.
 - Line numbers, printing state, context, and active ranges reset for each file.
 - Diagnostics and file-opening errors are written to standard error.
@@ -202,10 +244,10 @@ onoff --exclude-start --exclude-end 'BEGIN..END' file.txt
 
 ## Current limitations
 
-- Paired trigger sets are planned but not implemented. All configured starts
-  and stops share one printing state.
-- Boundary inclusion policy is global. Mixing `--start` with `--start-after`,
-  or `--end` with `--end-before`, requires paired rules and is rejected.
+- Paired rules do not nest or overlap; only one rule can be active.
+- Explicit named rules cannot be mixed with implicit ranges in one command.
+- Boundary inclusion remains global for an implicit range, but belongs to each
+  explicit named rule.
 - `--fixed` and `--ignore-case` apply to every expression in the command.
 - Standard input may only appear once.
 
