@@ -189,4 +189,157 @@ for my $invalid_case (
   like($stderr, qr/^onoff:/, "$invalid_case->[1] reports a usage error");
 }
 
+($stdout, $stderr, $status) = run_onoff(
+  $sections, '--start', '^BEGIN$', '--end', '^END$',
+);
+is(
+  $stdout,
+  "BEGIN\ninside\nEND\nBEGIN\nsecond\nEND\n",
+  'conventional long start and end options work',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  $sections, '-sta', '^BEGIN$', '-sto', '^END$',
+);
+is(
+  $stdout,
+  "BEGIN\ninside\nEND\nBEGIN\nsecond\nEND\n",
+  'legacy unique option abbreviations remain compatible',
+);
+
+($stdout, $stderr, $status) = run_onoff(undef, '--help');
+like($stdout, qr/--start/, 'double-hyphen help works');
+is($status, 0, 'double-hyphen help succeeds');
+
+my $literal_sections = <<'TEXT';
+outside
+[BEGIN]
+inside
+[END]
+outside again
+TEXT
+
+($stdout, $stderr, $status) = run_onoff(
+  $literal_sections,
+  '--fixed', '--start', '[BEGIN]', '--end', '[END]',
+);
+is(
+  $stdout,
+  "[BEGIN]\ninside\n[END]\n",
+  'fixed matching treats regular-expression punctuation literally',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "outside\nbegin\ninside\nEnD\n",
+  '--ignore-case', '--start', '^BEGIN$', '--end', '^end$',
+);
+is(
+  $stdout,
+  "begin\ninside\nEnD\n",
+  'ignore-case applies to start and end expressions',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "outside\nOPEN\none\nCLOSE\noutside\nBEGIN\ntwo\nEND\n",
+  '--start', '^OPEN$', '--start', '^BEGIN$',
+  '--end', '^CLOSE$', '--end', '^END$',
+);
+is(
+  $stdout,
+  "OPEN\none\nCLOSE\nBEGIN\ntwo\nEND\n",
+  'repeated starts and ends accumulate as alternatives',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  "zero\napple\nbanana\ncarrot\n",
+  '--regexp', '^apple$', '--regexp', '^carrot$',
+);
+is($stdout, "apple\ncarrot\n", 'repeated individual expressions accumulate');
+
+my $unterminated_file = File::Spec->catfile(
+  $temporary_directory,
+  'unterminated.txt',
+);
+my $following_file = File::Spec->catfile(
+  $temporary_directory,
+  'following.txt',
+);
+for my $file_and_text (
+  [$unterminated_file, "BEGIN\nfirst file\n"],
+  [$following_file,    "second file\nEND\n"],
+) {
+  open my $filehandle, '>', $file_and_text->[0] or die $!;
+  print {$filehandle} $file_and_text->[1];
+  close $filehandle or die $!;
+}
+
+($stdout, $stderr, $status) = run_onoff(
+  undef,
+  '--start', '^BEGIN$', '--end', '^END$',
+  $unterminated_file, $following_file,
+);
+is(
+  $stdout,
+  "BEGIN\nfirst file\n",
+  'printing state does not carry into the next file',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  undef, '--regexp', '^second file$', '--lead', '1',
+  $unterminated_file, $following_file,
+);
+is(
+  $stdout,
+  "second file\n",
+  'lead context does not carry between files',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  undef, '--regexp', '^first file$', '--linger', '1',
+  $unterminated_file, $following_file,
+);
+is(
+  $stdout,
+  "first file\n",
+  'linger state does not carry between files',
+);
+
+($stdout, $stderr, $status) = run_onoff(
+  '', '--regexp', 'anything', '-', '-',
+);
+is($status, 2, 'standard input cannot be listed more than once');
+like($stderr, qr/standard input.*once/, 'repeated standard input is explained');
+
+my $range_listing_input = <<'TEXT';
+outside
+BEGIN
+inside
+END
+outside
+BEGIN
+unfinished
+TEXT
+
+($stdout, $stderr, $status) = run_onoff(
+  $range_listing_input,
+  '--start', '^BEGIN$', '--end', '^END$', '--list-ranges',
+);
+is(
+  $stdout,
+  "<stdin>\t2\t4\n<stdin>\t6\tEOF\n",
+  'list-ranges reports completed and unterminated logical ranges',
+);
+is($status, 0, 'list-ranges succeeds when ranges were found');
+
+($stdout, $stderr, $status) = run_onoff(
+  "zero\nmatch\ntwo\n", '--regexp', '^match$', '--list-ranges',
+);
+is($stdout, "<stdin>\t2\t2\n", 'list-ranges reports individual matches');
+
+($stdout, $stderr, $status) = run_onoff(
+  "zero\nnothing\ntwo\n", '--regexp', '^match$', '--list-ranges',
+);
+is($stdout, '', 'list-ranges prints nothing when no range matched');
+is($status, 1, 'list-ranges returns status 1 when no range matched');
+
 done_testing();

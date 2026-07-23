@@ -41,6 +41,9 @@ Status: complete.
 Phase 2: Modernize the command line
 -----------------------------------
 
+Status: complete. --list-ranges was implemented; --dry-run is deferred until
+output rules give it more useful work to validate.
+
 * Accept conventional long options such as --start, --end, and --help while
   retaining the existing single-hyphen forms.
 * Add --fixed for literal-string matching and --ignore-case for insensitive

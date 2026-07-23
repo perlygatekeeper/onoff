@@ -5,8 +5,8 @@
 use strict;
 use warnings;
 
-use Text::Abbrev;
 use Data::Dumper;
+use Text::Abbrev;
 
 my $last_mod_date='Wed, Jul 22, 2026';
 
@@ -17,14 +17,15 @@ my $copyright="$last_mod_date. All rights reserved.";
 
 my $name = $0; $name =~ s'.*/''; # remove path--like basename
 my $usage  = "usage:\n$name\n\t";
-$usage .= "[ ( -?      | -help  | -debug | -usage ) ]\n\t";
-$usage .= "[ ( -on     | -begin | -start ) start_regexp ]\n\t";
-$usage .= "[ ( -off    | -end   | -stop  ) stop_regexp ]\n\t";
-$usage .= "[ ( -regexp | -find  | -grep  ) regexp ]\n\t";
-$usage .= "[ -lead N -linger M  | -context N ]\n\t";
+$usage .= "[ ( -?      | --help  | --debug | --usage ) ]\n\t";
+$usage .= "[ ( --on    | --begin | --start ) start_regexp ]\n\t";
+$usage .= "[ ( --off   | --end   | --stop  ) stop_regexp ]\n\t";
+$usage .= "[ ( --regexp | --find | --grep ) regexp ]\n\t";
+$usage .= "[ --fixed ] [ --ignore-case ] [ --list-ranges ]\n\t";
+$usage .= "[ --lead N --linger M | --context N ]\n\t";
 $usage .= "[  N..M     |  N..   |  ..M  |  N  ]\n\t";
-$usage .= "[ -number ]\n\t";
-$usage .= "[ [ -file ] file1 file2 .. ]";
+$usage .= "[ --number ]\n\t";
+$usage .= "[ [ --file ] file1 file2 .. ]";
 
 my $plan = initialize_plan();
 
@@ -35,17 +36,23 @@ print Dumper($plan) if ($plan->{debug});
 my $stats = execute_plan($plan);
 
 exit 2 if $stats->{errors};
-exit($stats->{lines_printed} ? 0 : 1);
+exit($stats->{lines_selected} ? 0 : 1);
 
 sub initialize_plan {
   return {
     debug          => 0,
+    end_patterns   => [],
     explanations   => [],
     files          => [],
+    fixed           => 0,
+    ignore_case     => 0,
     lead           => 0,
     linger         => 0,
+    list_ranges    => 0,
+    match_patterns => [],
     print_stops    => 1,
     ranges         => [],
+    start_patterns => [],
     start_lines    => {},
     start_printing => 0,
     stop_lines     => {},
@@ -60,18 +67,21 @@ sub execute_plan {
     files_processed => 0,
     lines_printed  => 0,
     lines_read     => 0,
+    lines_selected => 0,
     lines_skipped  => 0,
+    ranges         => [],
     starts_matched => 0,
   };
 
   foreach my $file (@{$plan->{files}}) {
     my $state = {
-      active_rule => undef,
-      filename    => $file,
-      lead_buffer => [],
-      line_number => 0,
-      linger_left => 0,
-      printing    => $plan->{start_printing},
+      active_range_start => $plan->{start_printing} ? 1 : undef,
+      active_rule        => undef,
+      filename           => $file,
+      lead_buffer        => [],
+      line_number        => 0,
+      linger_left        => 0,
+      printing           => $plan->{start_printing},
     };
 
     my $filehandle;
@@ -108,6 +118,19 @@ sub execute_plan {
       $stats->{starts_matched}++ if $start_match;
       $stats->{ends_matched}++ if $active_end;
 
+      if ($start_match && !$was_printing) {
+        $state->{active_range_start} = $state->{line_number};
+      }
+
+      if ($single_match && !$plan->{has_range_conditions}) {
+        record_range(
+          $stats,
+          $file,
+          $state->{line_number},
+          $state->{line_number},
+        );
+      }
+
       if ($start_match || $single_match) {
         while (@{$state->{lead_buffer}}) {
           my $buffered = shift @{$state->{lead_buffer}};
@@ -141,11 +164,30 @@ sub execute_plan {
       $state->{printing} =
         $was_printing ? !$end_match : ($start_match && !$end_match);
 
+      if ($active_end) {
+        record_range(
+          $stats,
+          $file,
+          $state->{active_range_start},
+          $state->{line_number},
+        );
+        $state->{active_range_start} = undef;
+      }
+
       $state->{linger_left}-- if $within_linger;
       if ($single_match || $active_end) {
         $state->{linger_left} = $plan->{linger}
           if $plan->{linger} > $state->{linger_left};
       }
+    }
+
+    if ($state->{printing} && $state->{line_number}) {
+      record_range(
+        $stats,
+        $file,
+        $state->{active_range_start},
+        'EOF',
+      );
     }
 
     $stats->{lines_skipped} += @{$state->{lead_buffer}};
@@ -155,134 +197,149 @@ sub execute_plan {
     }
   }
 
+  if ($plan->{list_ranges}) {
+    for my $range (@{$stats->{ranges}}) {
+      my $filename = $range->{file} eq '-' ? '<stdin>' : $range->{file};
+      print join("\t", $filename, $range->{start}, $range->{end}), "\n";
+    }
+  }
+
   return $stats;
 }
 
 sub print_line {
   my ($plan, $state, $stats, $line, $line_number) = @_;
   $line_number //= $state->{line_number};
+  $stats->{lines_selected}++;
+  return if $plan->{list_ranges};
   $stats->{lines_printed}++;
   printf "%5d ", $line_number if ($plan->{number});
   print $line;
 }
 
+sub record_range {
+  my ($stats, $file, $start, $end) = @_;
+  return unless defined $start;
+  push @{$stats->{ranges}}, {
+    end   => $end,
+    file  => $file,
+    start => $start,
+  };
+}
+
 sub parse_arguments {
   my $plan = shift;
-  my (@start_regexps, @stop_regexps, @regexps);
-  my @args=('?','help','debug','usage');
-  my @help=('print this message','print this message','set debugging flag','print short usage message');
-  push(@args,'regexp','find','grep');
-  push(@help,'regexp to identify a single-line print trigger, context may still apply',
-         'regexp to identify a single-line print trigger, context may still apply',
-         'regexp to identify a single-line print trigger, context may still apply',);
-  push(@args,'on','start','begin','off','stop','end');
-  push(@help,'regexp to trigger printing',
-             'regexp to trigger printing',
-             'regexp to trigger printing',
-             'regexp to terminate printing',
-             'regexp to terminate printing',
-             'regexp to terminate printing');
-  push(@args,'number');
-  push(@help,'print line numbers before each printed line');
-  push(@args,'lead','linger','context','file');
-  push(@help,'# of lines to print before each print trigger',
-             '# of lines to print after each terminate trigger',
-             '# of lines to print before and after a trigger',
-             'name of file to add to list of files to scan');
-  grep(s/^([^-])/-$1/,@args);
-  my $abbrev = abbrev @args;
-  push(@args,'N','N..','..M','N..M');
-  push(@help,"will print line N, ignoring start/stop regexp's",
-             "start printing at line N, will continue until something terminates it",
-             "will terminate printing at line M, ignoring start/stop regexp's",
-             "will print all lines between N and M ignoring all all regexp triggers");
-  for (my $arg=$[; $arg<=$#args; $arg++) {
-    push ( @{$plan->{explanations}}, { arg => $args[$arg], explanation => $help[$arg] } );
-  }
-  while ( @ARGV >= 1 ) {
-    if ( $abbrev->{$ARGV[0]} ) {                       # have a valid argument, find which one
-      my $option = $abbrev->{$ARGV[0]};
-      if ($option =~ /^-(?:regexp|find|grep|on|start|begin|off|stop|end|lead|linger|context|file)$/
-          && @ARGV < 2) {
-        usage_error("option '$ARGV[0]' requires a value");
-      }
-      if ( $abbrev->{$ARGV[0]} eq '-help' or  $abbrev->{$ARGV[0]} eq '-?' ) {
+  my @options = qw(
+    ? help debug usage
+    regexp find grep
+    on start begin off stop end
+    number lead linger context file
+    fixed ignore-case list-ranges
+  );
+  @options = map { "-$_" } @options;
+  my $abbrev = abbrev @options;
+  my %takes_value = map { $_ => 1 } qw(
+    -regexp -find -grep
+    -on -start -begin -off -stop -end
+    -lead -linger -context -file
+  );
+
+  $plan->{explanations} = [
+    { arg => '--help, -help, -?', explanation => 'print detailed help' },
+    { arg => '--usage, -usage', explanation => 'print a short usage summary' },
+    { arg => '--start, -start', explanation => 'regexp to trigger printing' },
+    { arg => '--end, -end', explanation => 'regexp to terminate printing' },
+    { arg => '--regexp, -regexp', explanation => 'regexp selecting individual lines' },
+    { arg => '--fixed', explanation => 'treat expressions as literal strings' },
+    { arg => '--ignore-case', explanation => 'match without regard to letter case' },
+    { arg => '--lead N', explanation => 'print N lines before a trigger' },
+    { arg => '--linger N', explanation => 'print N lines after a trigger' },
+    { arg => '--context N', explanation => 'print N lines before and after a trigger' },
+    { arg => '--number', explanation => 'prefix output with line numbers' },
+    { arg => '--list-ranges', explanation => 'list matched ranges without their contents' },
+    { arg => '--file FILE', explanation => 'add an input file' },
+    { arg => '--debug', explanation => 'show parsing and processing details' },
+    { arg => 'N | N.. | ..M | N..M', explanation => 'select numeric lines or ranges' },
+  ];
+
+  while (@ARGV) {
+    if ($ARGV[0] eq '--') {
+      shift @ARGV;
+      push @{$plan->{files}}, splice @ARGV;
+      last;
+    }
+
+    my $raw_option = $ARGV[0];
+    my $lookup = $raw_option;
+    $lookup =~ s/^--/-/;
+    my $option = $abbrev->{$lookup};
+
+    if ($option) {
+      shift @ARGV;
+      usage_error("option '$raw_option' requires a value")
+        if $takes_value{$option} && !@ARGV;
+      my $value = $takes_value{$option} ? shift @ARGV : undef;
+
+      if ($option eq '-help' || $option eq '-?') {
         help($plan);
-        shift(@ARGV);
-      } elsif ( $abbrev->{$ARGV[0]} eq '-usage' ) {
-      	print "$usage\n";
-      	exit 0;
-      } elsif ( $abbrev->{$ARGV[0]} eq '-debug' ) {
+      } elsif ($option eq '-usage') {
+        print "$usage\n";
+        exit 0;
+      } elsif ($option eq '-debug') {
         $plan->{debug} = 1;
-        print "user specified debugging flag set\n";
-        shift(@ARGV);
-      } elsif ( $abbrev->{$ARGV[0]} eq '-number' ) {
+      } elsif ($option eq '-number') {
         $plan->{number} = 1;
-        print "user asked us to number the output lines\n" if ($plan->{debug});
-        shift(@ARGV);
-      } elsif ( $abbrev->{$ARGV[0]} eq '-regexp' or  $abbrev->{$ARGV[0]} eq '-find' or  $abbrev->{$ARGV[0]} eq '-grep' ) {
-        push( @regexps, qq($ARGV[1]) );
-        print "user specified '$ARGV[1]' as regexp to print\n" if ($plan->{debug});
-        shift(@ARGV); shift(@ARGV);
-      } elsif ( $abbrev->{$ARGV[0]} eq '-on' or  $abbrev->{$ARGV[0]} eq '-start' or  $abbrev->{$ARGV[0]} eq '-begin' ) {
-        push( @start_regexps, qq($ARGV[1]) );
-        print "user specified '$ARGV[1]' as regexp to be added to triggers to start printing\n" if ($plan->{debug});
-        shift(@ARGV); shift(@ARGV);
-      } elsif ( $abbrev->{$ARGV[0]} eq '-off' or  $abbrev->{$ARGV[0]} eq '-stop' or  $abbrev->{$ARGV[0]} eq '-end' ) {
-        push( @stop_regexps, qq($ARGV[1]) );
-        print "user specified '$ARGV[1]' as regexp to be added to triggers to stop printing\n" if ($plan->{debug});
-        shift(@ARGV); shift(@ARGV);
-      } elsif ( $abbrev->{$ARGV[0]} eq '-lead' ) {
-        validate_nonnegative_integer('-lead', $ARGV[1]);
-        $plan->{lead} = $ARGV[1];
-        print "user specified '$ARGV[1]' as number of lines to print before each trigger regexp\n" if ($plan->{debug});
-        shift(@ARGV); shift(@ARGV);
-      } elsif ( $abbrev->{$ARGV[0]} eq '-linger' ) {
-        validate_nonnegative_integer('-linger', $ARGV[1]);
-        $plan->{linger} = $ARGV[1];
-        print "user specified '$ARGV[1]' as number of lines to print after each terminate regexp\n" if ($plan->{debug});
-        shift(@ARGV); shift(@ARGV);
-      } elsif ( $abbrev->{$ARGV[0]} eq '-context' ) {
-        validate_nonnegative_integer('-context', $ARGV[1]);
-        $plan->{lead}   = $ARGV[1];
-        $plan->{linger} = $ARGV[1];
-        print "user specified '$ARGV[1]' as number of lines to print before each trigger regexp\n" if ($plan->{debug});
-        print "and the same number of lines to print after each terminate regexp\n" if ($plan->{debug});
-        shift(@ARGV); shift(@ARGV);
-      } elsif ( $abbrev->{$ARGV[0]} eq '-file' ) {
-        push(@{$plan->{files}},"$ARGV[1]") if $ARGV[1];
-        print "add '$ARGV[1]' to list of files to scan\n" if ($plan->{debug});
-        shift(@ARGV); shift(@ARGV);
-      } else {
-        print STDERR "'$ARGV[0]' doesn't appear to be implemented yet... strange?\n";
-        exit;
+      } elsif ($option eq '-fixed') {
+        $plan->{fixed} = 1;
+      } elsif ($option eq '-ignore-case') {
+        $plan->{ignore_case} = 1;
+      } elsif ($option eq '-list-ranges') {
+        $plan->{list_ranges} = 1;
+      } elsif ($option =~ /^-(?:regexp|find|grep)$/) {
+        push @{$plan->{match_patterns}}, $value;
+      } elsif ($option =~ /^-(?:on|start|begin)$/) {
+        push @{$plan->{start_patterns}}, $value;
+      } elsif ($option =~ /^-(?:off|stop|end)$/) {
+        push @{$plan->{end_patterns}}, $value;
+      } elsif ($option eq '-lead') {
+        validate_nonnegative_integer('--lead', $value);
+        $plan->{lead} = $value;
+      } elsif ($option eq '-linger') {
+        validate_nonnegative_integer('--linger', $value);
+        $plan->{linger} = $value;
+      } elsif ($option eq '-context') {
+        validate_nonnegative_integer('--context', $value);
+        $plan->{lead} = $value;
+        $plan->{linger} = $value;
+      } elsif ($option eq '-file') {
+        push @{$plan->{files}}, $value;
       }
-    } elsif ( $ARGV[0] =~ m'^-?(\d+)\.\.+(\d+)$' ) {                                    # N to M
+      next;
+    }
+
+    my $argument = shift @ARGV;
+    if ($argument =~ m'^-?(\d+)\.\.(\d+)$') {                                    # N to M
       usage_error('line numbers must be greater than zero') if $1 == 0 || $2 == 0;
       usage_error("range start $1 is greater than range end $2") if $1 > $2;
       $plan->{start_lines}{$1}++;
       $plan->{stop_lines}{$2}++;
       print "user has requested printing of lines $1 to $2 inclusive\n" if ($plan->{debug});
-      shift(@ARGV);
-    } elsif ( $ARGV[0] =~ m'^-?(\d+)\.\.$' ) {                                          # N on
+    } elsif ($argument =~ m'^-?(\d+)\.\.$') {                                          # N on
       usage_error('line numbers must be greater than zero') if $1 == 0;
       $plan->{start_lines}{$1}++;
       print "user has requested printing of lines starting at $1\n" if ($plan->{debug});
-      shift(@ARGV);
-    } elsif ( $ARGV[0] =~ m'^-?\.\.(\d+)$' ) {                                          #   to M
+    } elsif ($argument =~ m'^-?\.\.(\d+)$') {                                          #   to M
       usage_error('line numbers must be greater than zero') if $1 == 0;
       $plan->{start_printing} = 1;
       $plan->{stop_lines}{$1}++;
       push( @{$plan->{ranges}}, { start=>undef, end=>$1 } );
       print "user has requested printing of lines up to $1\n" if ($plan->{debug});
-      shift(@ARGV);
-    } elsif ( $ARGV[0] =~ m'^-?(\d+)$' ) {                                              # just print line N
+    } elsif ($argument =~ m'^-?(\d+)$') {                                              # just print line N
       usage_error('line numbers must be greater than zero') if $1 == 0;
       $plan->{start_lines}{$1}++;
       $plan->{stop_lines}{$1}++;
       print "user has requested printing of line $1\n" if ($plan->{debug});
-      shift(@ARGV);
-    } elsif ( $ARGV[0] =~ m'^-?([^.]*)\.\.+([^.]*)$' ) {                                # START to STOP (at least one is not a number)
+    } elsif ($argument =~ m'^-?([^.]*)\.\.([^.]*)$') {                                # START to STOP
       my $front=$1;
       my $back=$2;
       if ($front eq '' and $back eq '') {
@@ -290,59 +347,56 @@ sub parse_arguments {
       } elsif ($front eq '') { # ..SOMETHING (not a number)
         print " ..X '$front' '$back'\n" if ($plan->{debug});
         $plan->{start_printing} = 1;
-        push( @stop_regexps, qq($back) );
+        push @{$plan->{end_patterns}}, $back;
       } elsif ($back eq '') { # SOMETHING.. (not a number)
         print "X..  '$front' '$back'\n" if ($plan->{debug});
-        push( @start_regexps, qq($front) );
+        push @{$plan->{start_patterns}}, $front;
       } else {                # SOMETHING..SOMETHING_ELSE (at least one of which is not a number)
         print "X..Y '$front' '$back'\n" if ($plan->{debug});
         if ( $front=~/^\d+$/ ) {
+          usage_error('line numbers must be greater than zero') if $front == 0;
           print "N..? '$front' '$back'\n" if ($plan->{debug});
           $plan->{start_lines}{$front}++;
         } else {
           print "X..? '$front' '$back'\n" if ($plan->{debug});
-          push( @start_regexps, qq($front) );
+          push @{$plan->{start_patterns}}, $front;
         }
         if ( $back=~/^\d+$/ ) {
+          usage_error('line numbers must be greater than zero') if $back == 0;
           print "?..N '$front' '$back'\n" if ($plan->{debug});
           $plan->{stop_lines}{$back}++;
         } else {
           print "?..X '$front' '$back'\n" if ($plan->{debug});
-          push( @stop_regexps, qq($back) );
+          push @{$plan->{end_patterns}}, $back;
         }
       }
-      shift(@ARGV);
     } else {
-      usage_error("unknown option '$ARGV[0]'")
-        if $ARGV[0] =~ /^-/ && $ARGV[0] ne '-';
-      warn("$plan->{name}: Unknown option '$ARGV[0]'; assuming file to scan...\n") if ($plan->{debug});
-      push(@{$plan->{files}},shift(@ARGV));
+      usage_error("unknown option '$argument'")
+        if $argument =~ /^-/ && $argument ne '-';
+      push @{$plan->{files}}, $argument;
     }
+  }
 
-    if (@start_regexps) {
-      my $regexps_ored = join('|', @start_regexps);
-      $plan->{start_regexp} = compile_regexp('start', $regexps_ored);
-    }
-    if (@stop_regexps) {
-      my $regexps_ored = join('|', @stop_regexps);
-      $plan->{stop_regexp} = compile_regexp('end', $regexps_ored);
-    }
-    if (@regexps) {
-      my $regexps_ored = join('|', @regexps);
-      $plan->{regexp} = compile_regexp('match', $regexps_ored);
-    }
-  }  # end while
+  compile_plan_patterns($plan);
+
   if ($plan->{debug}) {
-    # print Dumper($abbrev);
     report_plan($plan);
   }
-  # if (@$ranges) { @$plan->{ranges} = sort { ( $plan->{ranges}->[$a]{start} <=> $plan->{ranges}->[$b]{start} ) || ( $plan->{ranges}->[$a]{end} <=> $plan->{ranges}->[$b]{end} ) } @$ranges }
-}  # end parse_args
+}
 
 sub validate_plan {
   my $plan = shift;
-  validate_nonnegative_integer('-lead', $plan->{lead});
-  validate_nonnegative_integer('-linger', $plan->{linger});
+  validate_nonnegative_integer('--lead', $plan->{lead});
+  validate_nonnegative_integer('--linger', $plan->{linger});
+
+  my $standard_inputs = grep { $_ eq '-' } @{$plan->{files}};
+  usage_error("standard input '-' may only be specified once")
+    if $standard_inputs > 1;
+
+  $plan->{has_range_conditions} =
+    $plan->{start_printing}
+    || keys %{$plan->{start_lines}}
+    || @{$plan->{start_patterns}};
 }
 
 sub validate_nonnegative_integer {
@@ -351,9 +405,35 @@ sub validate_nonnegative_integer {
     unless defined $value && $value =~ /^\d+$/;
 }
 
+sub compile_plan_patterns {
+  my $plan = shift;
+  for my $specification (
+    ['start', 'start_patterns', 'start_regexp'],
+    ['end',   'end_patterns',   'stop_regexp'],
+    ['match', 'match_patterns', 'regexp'],
+  ) {
+    my ($kind, $patterns_key, $regexp_key) = @{$specification};
+    next unless @{$plan->{$patterns_key}};
+
+    my @patterns;
+    for my $source (@{$plan->{$patterns_key}}) {
+      my $prepared = $plan->{fixed} ? quotemeta($source) : $source;
+      compile_regexp($kind, $prepared, $plan->{ignore_case});
+      push @patterns, "(?:$prepared)";
+    }
+    $plan->{$regexp_key} = compile_regexp(
+      $kind,
+      join('|', @patterns),
+      $plan->{ignore_case},
+    );
+  }
+}
+
 sub compile_regexp {
-  my ($kind, $source) = @_;
-  my $regexp = eval { qr/$source/ };
+  my ($kind, $source, $ignore_case) = @_;
+  my $regexp = eval {
+    $ignore_case ? qr/$source/i : qr/$source/
+  };
   if (!$regexp || $@) {
     my $error = $@ || 'unknown regular-expression error';
     $error =~ s/\s+at\s+\Q$0\E\s+line\s+\d+.*//s;

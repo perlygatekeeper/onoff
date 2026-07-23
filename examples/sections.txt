@@ -1,0 +1,7 @@
+outside
+BEGIN
+first section
+END
+outside again
+BEGIN
+unfinished section

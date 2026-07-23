@@ -48,26 +48,29 @@ Range boundaries are included in the output.
 ### Options
 
 ```text
--start REGEXP    start printing at a matching line
--stop REGEXP     stop printing after a matching line
--regexp REGEXP   print individual matching lines
--lead N          include N lines before a trigger
--linger N        include N lines after a trigger
--context N       include N lines before and after a trigger
--number          prefix output with line numbers
--file FILE       add an input file explicitly
--help            show detailed option help
--usage           show a short usage summary
--debug           show argument parsing and processing details
+--start REGEXP      start printing at a matching line
+--end REGEXP        stop printing after a matching line
+--regexp REGEXP     print individual matching lines
+--fixed             treat expressions as literal strings
+--ignore-case       match without regard to letter case
+--lead N            include N lines before a trigger
+--linger N          include N lines after a trigger
+--context N         include N lines before and after a trigger
+--number            prefix output with line numbers
+--list-ranges       report matched ranges instead of their contents
+--file FILE         add an input file explicitly
+--help              show detailed option help
+--usage             show a short usage summary
+--debug             show argument parsing and processing details
 ```
 
-The aliases `-on` and `-begin` mean `-start`; `-off` and `-end` mean
-`-stop`; and `-find` and `-grep` mean `-regexp`. Unique single-hyphen
-abbreviations are also accepted.
+The legacy single-hyphen forms remain supported. The aliases `--on` and
+`--begin` mean `--start`; `--off` and `--stop` mean `--end`; and `--find` and
+`--grep` mean `--regexp`. Unique option abbreviations are also accepted.
 
 Regular expressions are Perl regular expressions supplied as plain arguments.
 Do not surround them with `/` characters. Quote expressions containing spaces
-or shell metacharacters.
+or shell metacharacters. Repeating an expression option adds an alternative.
 
 ## Examples
 
@@ -86,7 +89,7 @@ onoff 4..27 file.txt
 Print from the first `BEGIN` line through the following `END` line:
 
 ```sh
-onoff -start '^BEGIN$' -stop '^END$' file.txt
+onoff --start '^BEGIN$' --end '^END$' file.txt
 ```
 
 The compact range form expresses the same operation:
@@ -98,26 +101,55 @@ onoff 'BEGIN..END' file.txt
 Print lines containing `error`, with two lines of context on each side:
 
 ```sh
-onoff -regexp 'error' -context 2 logfile
+onoff --regexp 'error' --context 2 logfile
 ```
 
 Print numbered output from line 20 onward, stopping at `__END__`, and include
 two additional lines:
 
 ```sh
-onoff 20.. -stop '__END__' -linger 2 -number source.pl
+onoff 20.. --end '__END__' --linger 2 --number source.pl
 ```
 
 Read from a pipeline:
 
 ```sh
-some-command | onoff -start 'connected' -stop 'disconnected' -
+some-command | onoff --start 'connected' --end 'disconnected'
 ```
 
 Multiple files may be supplied. Each file is opened and processed in order:
 
 ```sh
 onoff 1..10 first.txt second.txt
+```
+
+Treat an expression literally rather than as a regular expression:
+
+```sh
+onoff --fixed --regexp '[warning]' logfile
+```
+
+Match several alternatives without regard to case:
+
+```sh
+onoff --ignore-case \
+  --regexp '^warning:' \
+  --regexp '^error:' \
+  logfile
+```
+
+Report logical range locations without printing their contents:
+
+```sh
+onoff --start '^BEGIN$' --end '^END$' --list-ranges file.txt
+```
+
+The tab-separated report contains the input name, starting line, and ending
+line. An unterminated range uses `EOF` as its end:
+
+```text
+file.txt    12    28
+file.txt    61    EOF
 ```
 
 ## Behavior
@@ -127,9 +159,11 @@ onoff 1..10 first.txt second.txt
   printed.
 - A line matching both the start and stop condition is printed once and does
   not leave printing enabled.
-- `-regexp` selects individual matching lines rather than an entire section.
-- `-lead`, `-linger`, and `-context` add nearby lines around triggers.
+- `--regexp` selects individual matching lines rather than an entire section.
+- `--lead`, `--linger`, and `--context` add nearby lines around triggers.
+- Repeated start, end, and individual expressions are combined as alternatives.
 - Files are processed independently and output is written to standard output.
+- Line numbers, printing state, context, and active ranges reset for each file.
 - Diagnostics and file-opening errors are written to standard error.
 
 ### Exit status
@@ -142,14 +176,11 @@ onoff 1..10 first.txt second.txt
 
 ## Current limitations
 
-- Use single-hyphen options such as `-help`; GNU-style `--help` is not
-  supported.
 - Paired trigger sets are planned but not implemented. All configured starts
   and stops share one printing state.
-- Supplying multiple start, stop, or single-match expressions is not reliable;
-  use one expression of each kind and combine alternatives with `|`.
-- Option values are not fully validated. Always provide an argument after
-  `-start`, `-stop`, `-regexp`, `-lead`, `-linger`, `-context`, and `-file`.
+- Boundary lines are always included.
+- `--fixed` and `--ignore-case` apply to every expression in the command.
+- Standard input may only appear once.
 
 ## Project commands
 
@@ -163,9 +194,8 @@ make examples
 make check
 ```
 
-Sample input and runnable command examples live in `examples/`. The existing
-test file is under `test/`; it is an unfinished placeholder and does not yet
-test `onoff` behavior.
+Sample input and runnable command examples live in `examples/`. Black-box tests
+of the command-line behavior live under `test/`.
 
 The original development notes and design questions are preserved in
 `docs/Readme.notes`. Planned development is described in `docs/Roadmap.txt`.
